@@ -50,17 +50,24 @@ impl Worker {
         self.tx.try_send(event)
     }
 }
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+pub(crate) enum SubscribeKey {
+    Type(TypeId),
+    TypeWithKey(TypeId, String),
+}
+
 pub(crate) struct CopyOfWorker {
     id: WorkerId,
     tx_event: Sender<BusEvent>,
-    subscribe_events: HashSet<TypeId>,
+    subscribe_keys: HashSet<SubscribeKey>,
 }
 impl CopyOfWorker {
     pub fn init(id: WorkerId, tx_event: Sender<BusEvent>) -> Self {
         Self {
             id,
             tx_event,
-            subscribe_events: Default::default(),
+            subscribe_keys: Default::default(),
         }
     }
     pub fn id(&self) -> WorkerId {
@@ -74,10 +81,14 @@ impl CopyOfWorker {
         }
     }
     pub fn subscribe_event(&mut self, ty_id: TypeId) {
-        self.subscribe_events.insert(ty_id);
+        self.subscribe_keys.insert(SubscribeKey::Type(ty_id));
     }
-    pub fn subscribe_events(&self) -> std::collections::hash_set::Iter<'_, TypeId> {
-        self.subscribe_events.iter()
+    pub fn subscribe_event_with_key(&mut self, ty_id: TypeId, key: String) {
+        self.subscribe_keys
+            .insert(SubscribeKey::TypeWithKey(ty_id, key));
+    }
+    pub fn subscribe_keys(&self) -> std::collections::hash_set::Iter<'_, SubscribeKey> {
+        self.subscribe_keys.iter()
     }
 }
 

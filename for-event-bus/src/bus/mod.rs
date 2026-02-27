@@ -1,6 +1,6 @@
 use crate::bus::sub_bus::{EntryOfSubBus, SubBus};
 use crate::worker::identity::{IdentityCommon, IdentityOfRx, IdentityOfSimple, Merge};
-use crate::worker::{CopyOfWorker, ToWorker, WorkerId};
+use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
 use crate::{Event, IdentityOfMerge};
 use log::{debug, error};
 use std::any::{Any, TypeId};
@@ -107,18 +107,24 @@ impl<T> From<SendError<T>> for BusError {
     }
 }
 
-pub enum BusData {
+pub(crate) enum BusData {
     /// Worker 登录，请求创建身份对象并返回给调用方。
     Login(oneshot::Sender<IdentityCommon>, String),
     // SimpleLogin(oneshot::Sender<IdentityCommon>, String),
-    /// Worker 订阅某个事件类型。
-    Subscribe(WorkerId, TypeId, &'static str),
-    /// Worker 发送事件，Bus 会按 TypeId 路由到对应 SubBus。
-    DispatchEvent(WorkerId, BusEvent),
+    /// Worker 订阅某个路由键（TypeId 或 key + TypeId）。
+    Subscribe(WorkerId, RouteKey, &'static str),
+    /// Worker 发送事件，Bus 按路由键分发。
+    DispatchEvent(WorkerId, RouteKey, BusEvent),
     /// Worker 下线，Bus 负责移除并清理订阅关系。
     Drop(WorkerId),
     /// 定时输出订阅关系快照。
     Trace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum RouteKey {
+    Type(TypeId),
+    TypeWithKey(TypeId, String),
 }
 
 #[derive(Clone)]
@@ -185,7 +191,7 @@ pub struct Bus<const CAP: usize> {
     rx: UnboundedReceiver<BusData>,
     tx: UnboundedSender<BusData>,
     workers: HashMap<WorkerId, CopyOfWorker>,
-    sub_buses: HashMap<TypeId, EntryOfSubBus>,
+    sub_buses: HashMap<RouteKey, EntryOfSubBus>,
 }
 
 impl<const CAP: usize> Drop for Bus<CAP> {
@@ -238,17 +244,23 @@ impl<const CAP: usize> Bus<CAP> {
                     BusData::Drop(worker_id) => {
                         debug!("{} Drop", worker_id);
                         if let Some(worker) = self.workers.remove(&worker_id) {
-                            for ty_id in worker.subscribe_events() {
-                                let should_remove =
-                                    if let Some(sub_bus) = self.sub_buses.get_mut(&ty_id) {
-                                        sub_bus.send_unsubscribe(worker_id.clone()).await == 0
-                                    } else {
-                                        //todo
-                                        false
-                                    };
+                            for subscribe_key in worker.subscribe_keys() {
+                                let route_key = match subscribe_key {
+                                    SubscribeKey::Type(ty_id) => RouteKey::Type(*ty_id),
+                                    SubscribeKey::TypeWithKey(ty_id, key) => {
+                                        RouteKey::TypeWithKey(*ty_id, key.clone())
+                                    }
+                                };
+                                let should_remove = if let Some(sub_bus) =
+                                    self.sub_buses.get_mut(&route_key)
+                                {
+                                    sub_bus.send_unsubscribe(worker_id.clone()).await == 0
+                                } else {
+                                    false
+                                };
                                 if should_remove {
-                                    if let Some(sub_bus) = self.sub_buses.remove(ty_id) {
-                                        // 该类型已无订阅者，释放对应 SubBus。
+                                    if let Some(sub_bus) = self.sub_buses.remove(&route_key) {
+                                        // 该路由键已无订阅者，释放对应 SubBus。
                                         sub_bus.send_drop().await;
                                     }
                                 }
@@ -257,9 +269,8 @@ impl<const CAP: usize> Bus<CAP> {
                             // todo
                         }
                     }
-                    BusData::DispatchEvent(worker_id, event) => {
-                        // 数据面路由：事件只进入“同 TypeId 的 SubBus”。
-                        if let Some(sub_buses) = self.sub_buses.get(&event.type_id()) {
+                    BusData::DispatchEvent(worker_id, route_key, event) => {
+                        if let Some(sub_buses) = self.sub_buses.get(&route_key) {
                             debug!("{} dispatch {}", worker_id, sub_buses.name());
                             sub_buses.send_event(event).await;
                         } else {
@@ -270,17 +281,26 @@ impl<const CAP: usize> Bus<CAP> {
                             );
                         }
                     }
-                    BusData::Subscribe(worker_id, typeid, name) => {
+                    BusData::Subscribe(worker_id, route_key, name) => {
                         debug!("{} subscribe {}", worker_id, name);
                         if let Some(worker) = self.workers.get_mut(&worker_id) {
-                            worker.subscribe_event(typeid);
-                            if let Some(sub_buses) = self.sub_buses.get_mut(&typeid) {
+                            match &route_key {
+                                RouteKey::Type(typeid) => worker.subscribe_event(*typeid),
+                                RouteKey::TypeWithKey(typeid, key) => {
+                                    worker.subscribe_event_with_key(*typeid, key.clone())
+                                }
+                            }
+                            if let Some(sub_buses) = self.sub_buses.get_mut(&route_key) {
                                 sub_buses.send_subscribe(worker.init_subscriber()).await;
                             } else {
-                                // 首次订阅该类型时，按需创建 SubBus。
+                                let typeid = match route_key {
+                                    RouteKey::Type(typeid) | RouteKey::TypeWithKey(typeid, _) => {
+                                        typeid
+                                    }
+                                };
                                 let mut copy = SubBus::<CAP>::init(typeid, name);
                                 copy.send_subscribe(worker.init_subscriber()).await;
-                                self.sub_buses.insert(typeid, copy);
+                                self.sub_buses.insert(route_key, copy);
                             }
                         }
                     }

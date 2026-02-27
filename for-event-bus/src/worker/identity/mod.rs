@@ -1,4 +1,4 @@
-use crate::bus::{BusData, BusError, BusEvent};
+use crate::bus::{BusData, BusError, BusEvent, RouteKey};
 use crate::worker::WorkerId;
 use log::debug;
 use std::any::TypeId;
@@ -23,7 +23,7 @@ impl IdentityOfTx {
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::Subscribe(
             self.id.clone(),
-            TypeId::of::<T>(),
+            RouteKey::Type(TypeId::of::<T>()),
             T::name(),
         ))?)
     }
@@ -31,6 +31,30 @@ impl IdentityOfTx {
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::DispatchEvent(
             self.id.clone(),
+            RouteKey::Type(TypeId::of::<T>()),
+            BusEvent::new(event),
+        ))?)
+    }
+
+    pub async fn subscribe_with_key<T: Event + 'static>(
+        &self,
+        key: impl Into<String>,
+    ) -> Result<(), BusError> {
+        Ok(self.tx_data.send(BusData::Subscribe(
+            self.id.clone(),
+            RouteKey::TypeWithKey(TypeId::of::<T>(), key.into()),
+            T::name(),
+        ))?)
+    }
+
+    pub async fn dispatch_with_key<T: Event>(
+        &self,
+        key: impl Into<String>,
+        event: T,
+    ) -> Result<(), BusError> {
+        Ok(self.tx_data.send(BusData::DispatchEvent(
+            self.id.clone(),
+            RouteKey::TypeWithKey(TypeId::of::<T>(), key.into()),
             BusEvent::new(event),
         ))?)
     }
@@ -40,7 +64,7 @@ impl IdentityOfTx {
 pub struct IdentityOfRx {
     pub id: WorkerId,
     pub rx_event: Receiver<BusEvent>,
-    pub tx_data: UnboundedSender<BusData>,
+    pub(crate) tx_data: UnboundedSender<BusData>,
 }
 
 pub struct IdentityCommon {
@@ -167,7 +191,7 @@ impl IdentityOfRx {
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::Subscribe(
             self.id.clone(),
-            TypeId::of::<T>(),
+            RouteKey::Type(TypeId::of::<T>()),
             T::name(),
         ))?)
     }
@@ -175,6 +199,30 @@ impl IdentityOfRx {
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::DispatchEvent(
             self.id.clone(),
+            RouteKey::Type(TypeId::of::<T>()),
+            BusEvent::new(event),
+        ))?)
+    }
+
+    pub async fn subscribe_with_key<T: Event + 'static>(
+        &self,
+        key: impl Into<String>,
+    ) -> Result<(), BusError> {
+        Ok(self.tx_data.send(BusData::Subscribe(
+            self.id.clone(),
+            RouteKey::TypeWithKey(TypeId::of::<T>(), key.into()),
+            T::name(),
+        ))?)
+    }
+
+    pub async fn dispatch_with_key<T: Event>(
+        &self,
+        key: impl Into<String>,
+        event: T,
+    ) -> Result<(), BusError> {
+        Ok(self.tx_data.send(BusData::DispatchEvent(
+            self.id.clone(),
+            RouteKey::TypeWithKey(TypeId::of::<T>(), key.into()),
             BusEvent::new(event),
         ))?)
     }

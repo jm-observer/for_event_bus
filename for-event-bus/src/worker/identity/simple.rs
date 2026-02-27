@@ -48,7 +48,19 @@ impl<T: Event> IdentityOfSimple<T> {
         Ok(self.id.subscribe::<T>().await?)
     }
 
+    pub async fn subscribe_with_key(&self, key: impl Into<String>) -> Result<(), BusError> {
+        Ok(self.id.subscribe_with_key::<T>(key).await?)
+    }
+
     pub async fn dispatch_event<E: Event>(&self, event: E) -> Result<(), BusError> {
         Ok(self.id.dispatch_event(event).await?)
+    }
+
+    pub async fn dispatch_with_key<E: Event>(
+        &self,
+        key: impl Into<String>,
+        event: E,
+    ) -> Result<(), BusError> {
+        Ok(self.id.dispatch_with_key(key, event).await?)
     }
 }

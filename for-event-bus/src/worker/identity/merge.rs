@@ -1,4 +1,4 @@
-use crate::bus::{BusData, BusEvent};
+use crate::bus::{BusData, BusEvent, RouteKey};
 
 pub trait Merge {
     fn merge(event: BusEvent) -> Result<Self, BusError>
@@ -61,14 +61,36 @@ impl<T: Merge + Event> IdentityOfMerge<T> {
     }
     pub(crate) async fn subscribe(&self) -> Result<(), BusError> {
         for (type_id, name) in T::subscribe_types() {
-            self.id
-                .tx_data
-                .send(BusData::Subscribe(self.id.id.clone(), type_id, name))?;
+            self.id.tx_data.send(BusData::Subscribe(
+                self.id.id.clone(),
+                RouteKey::Type(type_id),
+                name,
+            ))?;
+        }
+        Ok(())
+    }
+
+    pub async fn subscribe_with_key(&self, key: impl Into<String>) -> Result<(), BusError> {
+        let key = key.into();
+        for (type_id, name) in T::subscribe_types() {
+            self.id.tx_data.send(BusData::Subscribe(
+                self.id.id.clone(),
+                RouteKey::TypeWithKey(type_id, key.clone()),
+                name,
+            ))?;
         }
         Ok(())
     }
 
     pub async fn dispatch_event<E: Event>(&self, event: E) -> Result<(), BusError> {
         Ok(self.id.dispatch_event(event).await?)
+    }
+
+    pub async fn dispatch_with_key<E: Event>(
+        &self,
+        key: impl Into<String>,
+        event: E,
+    ) -> Result<(), BusError> {
+        Ok(self.id.dispatch_with_key(key, event).await?)
     }
 }
