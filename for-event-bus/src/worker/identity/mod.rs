@@ -55,6 +55,7 @@ pub struct IdentityCommon {
 
 impl Drop for IdentityOfRx {
     fn drop(&mut self) {
+        // Worker 对象释放时，通知 Bus 执行退订与资源清理。
         if self
             .tx_data
             .try_send(BusData::Drop(self.id.clone()))
@@ -113,6 +114,7 @@ impl IdentityOfRx {
     pub async fn recv<T: Event>(&mut self) -> Result<Arc<T>, BusError> {
         match self.recv_event().await {
             Ok(event) => {
+                // 先把 trait object 转成 Any，再做具体类型 downcast。
                 let any_event: Arc<dyn Any + Send + Sync + 'static> = unsafe {
                     mem::transmute::<Arc<dyn Event>, Arc<dyn Any + Send + Sync + 'static>>(event)
                 };
@@ -149,6 +151,7 @@ impl IdentityOfRx {
         match self.try_recv_event()? {
             Some(event) => {
                 // let any_event: Arc<dyn Any + Send + Sync + 'static> = Arc::new(&*event);
+                // 非阻塞接收路径，转换逻辑与 recv 一致。
                 let any_event: Arc<dyn Any + Send + Sync + 'static> = unsafe {
                     mem::transmute::<Arc<dyn Event>, Arc<dyn Any + Send + Sync + 'static>>(event)
                 };

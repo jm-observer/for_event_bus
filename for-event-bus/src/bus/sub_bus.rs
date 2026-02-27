@@ -9,10 +9,15 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub(crate) enum SubBusData {
+    /// 新增订阅者
     Subscribe(Worker),
+    /// 移除订阅者
     Unsubscribe(WorkerId),
+    /// 分发事件到该类型的所有订阅者
     Event(BusEvent),
+    /// 结束子总线循环
     Drop,
+    /// 输出当前订阅快照
     Trace,
 }
 #[allow(dead_code)]
@@ -41,6 +46,7 @@ impl EntryOfSubBus {
     }
 
     pub async fn send_subscribe(&mut self, subscriber: Worker) {
+        // Entry 侧维护一个轻量集合，供 Bus 判断“是否已空”。
         self.subscribers.insert(subscriber.id());
         if self
             .tx
@@ -109,6 +115,7 @@ impl<const CAP: usize> SubBus<CAP> {
                         self.subscribers.remove(&worker_id);
                     }
                     SubBusData::Event(event) => {
+                        // Fanout 广播：给每个订阅者都尝试发送一份 Arc 克隆。
                         let mut close_ids = Vec::new();
                         for subscriber in self.subscribers.values() {
                             let Err(e) = subscriber.try_send(event.clone()).await else {
@@ -116,6 +123,7 @@ impl<const CAP: usize> SubBus<CAP> {
                             };
                             match e {
                                 TrySendError::Full(_) => {
+                                    // 当前策略：队列满时仅告警并丢弃该订阅者本次消息。
                                     warn!("send event to {} fail: full", subscriber.id());
                                 }
                                 TrySendError::Closed(_) => {

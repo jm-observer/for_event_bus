@@ -36,11 +36,16 @@ impl From<oneshot::error::RecvError> for BusError {
 }
 
 pub enum BusData {
+    /// Worker 登录，请求创建身份对象并返回给调用方。
     Login(oneshot::Sender<IdentityCommon>, String),
     // SimpleLogin(oneshot::Sender<IdentityCommon>, String),
+    /// Worker 订阅某个事件类型。
     Subscribe(WorkerId, TypeId, &'static str),
+    /// Worker 发送事件，Bus 会按 TypeId 路由到对应 SubBus。
     DispatchEvent(WorkerId, BusEvent),
+    /// Worker 下线，Bus 负责移除并清理订阅关系。
     Drop(WorkerId),
+    /// 定时输出订阅关系快照。
     Trace,
 }
 
@@ -129,6 +134,12 @@ impl<const CAP: usize> Bus<CAP> {
         .run();
         EntryOfBus { tx }
     }
+
+    /// Bus 的控制循环：
+    /// 1) 处理登录和订阅关系维护
+    /// 2) 处理事件路由（按 TypeId -> SubBus）
+    /// 3) 处理 worker 下线后的清理
+    /// 4) 定时触发 trace 输出
     fn run(mut self) {
         spawn(async move {
             let tx = self.tx.clone();
@@ -144,6 +155,8 @@ impl<const CAP: usize> Bus<CAP> {
             while let Some(event) = self.rx.recv().await {
                 match event {
                     BusData::Login(tx, name) => {
+                        // 为每个 worker 创建一个独立接收通道（rx_event），
+                        // 并将身份对象回传给登录方。
                         let (identity_rx, copy_of_worker) = self.init_worker(name);
                         self.workers.insert(copy_of_worker.id(), copy_of_worker);
                         if tx.send(identity_rx).is_err() {
@@ -163,6 +176,7 @@ impl<const CAP: usize> Bus<CAP> {
                                     };
                                 if should_remove {
                                     if let Some(sub_bus) = self.sub_buses.remove(ty_id) {
+                                        // 该类型已无订阅者，释放对应 SubBus。
                                         sub_bus.send_drop().await;
                                     }
                                 }
@@ -172,6 +186,7 @@ impl<const CAP: usize> Bus<CAP> {
                         }
                     }
                     BusData::DispatchEvent(worker_id, event) => {
+                        // 数据面路由：事件只进入“同 TypeId 的 SubBus”。
                         if let Some(sub_buses) = self.sub_buses.get(&event.as_ref().type_id()) {
                             debug!("{} dispatch {}", worker_id, sub_buses.name());
                             sub_buses.send_event(event).await;
@@ -190,6 +205,7 @@ impl<const CAP: usize> Bus<CAP> {
                             if let Some(sub_buses) = self.sub_buses.get_mut(&typeid) {
                                 sub_buses.send_subscribe(worker.init_subscriber()).await;
                             } else {
+                                // 首次订阅该类型时，按需创建 SubBus。
                                 let mut copy = SubBus::<CAP>::init(typeid, name);
                                 copy.send_subscribe(worker.init_subscriber()).await;
                                 self.sub_buses.insert(typeid, copy);
@@ -215,6 +231,7 @@ impl<const CAP: usize> Bus<CAP> {
     //     )
     // }
     fn init_worker(&self, name: String) -> (IdentityCommon, CopyOfWorker) {
+        // 每个 worker 拥有自己的事件队列，便于独立消费与背压控制。
         let (tx_event, rx_event) = channel(CAP);
         let id = WorkerId::init(name);
         (
