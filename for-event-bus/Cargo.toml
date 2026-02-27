@@ -13,10 +13,14 @@ include = [
 ]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["derive"]
+derive = ["dep:for-event-bus-derive"]
+
 [dependencies]
 tokio.workspace = true
 log.workspace = true
-for-event-bus-derive.workspace = true
+for-event-bus-derive = { workspace = true, optional = true }
 
 [dev-dependencies]
 custom-utils.workspace = true
