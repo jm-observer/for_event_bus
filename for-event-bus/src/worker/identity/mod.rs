@@ -21,15 +21,18 @@ pub struct IdentityOfTx {
 
 impl IdentityOfTx {
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
-        Ok(self
-            .tx_data
-            .send(BusData::Subscribe(self.id.clone(), TypeId::of::<T>(), T::name()))?)
+        Ok(self.tx_data.send(BusData::Subscribe(
+            self.id.clone(),
+            TypeId::of::<T>(),
+            T::name(),
+        ))?)
     }
 
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
-        Ok(self
-            .tx_data
-            .send(BusData::DispatchEvent(self.id.clone(), BusEvent::new(event)))?)
+        Ok(self.tx_data.send(BusData::DispatchEvent(
+            self.id.clone(),
+            BusEvent::new(event),
+        ))?)
     }
 }
 
@@ -98,7 +101,10 @@ impl IdentityOfRx {
     }
 
     pub async fn recv_event(&mut self) -> Result<BusEvent, BusError> {
-        Ok(self.rx_event.recv().await.ok_or(BusError::ChannelErr)?)
+        self.rx_event
+            .recv()
+            .await
+            .ok_or_else(|| BusError::channel_closed("worker_recv_event", Some(self.id.name())))
     }
     pub async fn recv<T: Event>(&mut self) -> Result<Arc<T>, BusError> {
         match self.recv_event().await {
@@ -107,7 +113,7 @@ impl IdentityOfRx {
                 if let Ok(msg) = any_event.downcast::<T>() {
                     Ok(msg)
                 } else {
-                    Err(BusError::DowncastErr)
+                    Err(BusError::downcast_failed(T::name(), event.type_name()))
                 }
             }
             Err(e) => Err(e),
@@ -127,7 +133,10 @@ impl IdentityOfRx {
             Ok(event) => Ok(Some(event)),
             Err(err) => match err {
                 TryRecvError::Empty => Ok(None),
-                TryRecvError::Disconnected => Err(BusError::ChannelErr),
+                TryRecvError::Disconnected => Err(BusError::channel_closed(
+                    "worker_try_recv_event",
+                    Some(self.id.name()),
+                )),
             },
         }
     }
@@ -139,7 +148,7 @@ impl IdentityOfRx {
                 if let Ok(msg) = any_event.downcast::<T>() {
                     Ok(Some(msg))
                 } else {
-                    Err(BusError::DowncastErr)
+                    Err(BusError::downcast_failed(T::name(), event.type_name()))
                 }
             }
             None => Ok(None),
@@ -156,14 +165,86 @@ impl IdentityOfRx {
     //         .send(BusData::Subscribe(self.id, worker.type_id()))?)
     // }
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
-        Ok(self
-            .tx_data
-            .send(BusData::Subscribe(self.id.clone(), TypeId::of::<T>(), T::name()))?)
+        Ok(self.tx_data.send(BusData::Subscribe(
+            self.id.clone(),
+            TypeId::of::<T>(),
+            T::name(),
+        ))?)
     }
 
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
-        Ok(self
-            .tx_data
-            .send(BusData::DispatchEvent(self.id.clone(), BusEvent::new(event)))?)
+        Ok(self.tx_data.send(BusData::DispatchEvent(
+            self.id.clone(),
+            BusEvent::new(event),
+        ))?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct A;
+
+    #[derive(Debug)]
+    struct B;
+
+    impl Event for A {
+        fn name() -> &'static str {
+            "A"
+        }
+    }
+
+    impl Event for B {
+        fn name() -> &'static str {
+            "B"
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_reports_expected_and_actual_type_on_downcast_failure() {
+        let (tx_data, _rx_data) = tokio::sync::mpsc::unbounded_channel::<BusData>();
+        let (tx_event, rx_event) = tokio::sync::mpsc::channel::<BusEvent>(1);
+        let worker = WorkerId::init("test-worker".to_string());
+        let mut identity = IdentityOfRx {
+            id: worker,
+            rx_event,
+            tx_data,
+        };
+
+        tx_event.send(BusEvent::new(B)).await.unwrap();
+        let err = identity.recv::<A>().await.unwrap_err();
+        assert_eq!(
+            err,
+            BusError::DowncastFailed {
+                expected: "A",
+                actual: "B",
+            }
+        );
+    }
+
+    #[test]
+    fn try_recv_event_reports_channel_closed_with_worker() {
+        let (tx_data, _rx_data) = tokio::sync::mpsc::unbounded_channel::<BusData>();
+        let (tx_event, rx_event) = tokio::sync::mpsc::channel::<BusEvent>(1);
+        drop(tx_event);
+        let mut identity = IdentityOfRx {
+            id: WorkerId::init("closed-worker".to_string()),
+            rx_event,
+            tx_data,
+        };
+
+        let err = match identity.try_recv_event() {
+            Ok(_) => panic!("expected channel closed error"),
+            Err(err) => err,
+        };
+        match err {
+            BusError::ChannelClosed { stage, worker } => {
+                assert_eq!(stage, "worker_try_recv_event");
+                assert_eq!(worker.as_deref(), Some("closed-worker"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

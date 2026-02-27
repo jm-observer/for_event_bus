@@ -1,7 +1,7 @@
 use custom_utils::logger::log::debug;
 use custom_utils::parse_file;
 use quote::quote;
-use syn::{Item};
+use syn::Item;
 
 #[tokio::main]
 async fn main() {

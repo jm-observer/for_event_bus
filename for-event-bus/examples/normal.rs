@@ -1,4 +1,4 @@
-use for_event_bus::{upcast, EntryOfBus, Event, IdentityOfRx, IdentityOfSimple, ToWorker, Bus};
+use for_event_bus::{upcast, Bus, EntryOfBus, Event, IdentityOfRx, IdentityOfSimple, ToWorker};
 use log::debug;
 use std::time::Duration;
 use tokio::spawn;
@@ -76,7 +76,6 @@ impl WorkerDispatcher {
                 self.identity.dispatch_event(Close).await.unwrap();
                 sleep(Duration::from_secs(5)).await
             }
-
         });
     }
 }

@@ -5,6 +5,7 @@ use crate::{Event, IdentityOfMerge};
 use log::{debug, error};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::spawn;
@@ -44,21 +45,65 @@ impl BusEvent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BusError {
+    /// legacy: kept for compatibility with older external code.
     ChannelErr,
+    /// legacy: kept for compatibility with older external code.
     DowncastErr,
+    ChannelClosed {
+        stage: &'static str,
+        worker: Option<String>,
+    },
+    DowncastFailed {
+        expected: &'static str,
+        actual: &'static str,
+    },
+}
+
+impl BusError {
+    pub fn channel_closed(stage: &'static str, worker: Option<&str>) -> Self {
+        Self::ChannelClosed {
+            stage,
+            worker: worker.map(ToOwned::to_owned),
+        }
+    }
+
+    pub fn downcast_failed(expected: &'static str, actual: &'static str) -> Self {
+        Self::DowncastFailed { expected, actual }
+    }
+}
+
+impl Display for BusError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BusError::ChannelErr => write!(f, "channel error"),
+            BusError::DowncastErr => write!(f, "downcast error"),
+            BusError::ChannelClosed { stage, worker } => {
+                if let Some(worker) = worker {
+                    write!(f, "channel closed at {stage}, worker={worker}")
+                } else {
+                    write!(f, "channel closed at {stage}")
+                }
+            }
+            BusError::DowncastFailed { expected, actual } => {
+                write!(f, "downcast failed: expected={expected}, actual={actual}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BusError {}
+
+impl From<oneshot::error::RecvError> for BusError {
+    fn from(_: oneshot::error::RecvError) -> Self {
+        Self::channel_closed("oneshot_recv", None)
+    }
 }
 
 impl<T> From<SendError<T>> for BusError {
     fn from(_: SendError<T>) -> Self {
-        Self::ChannelErr
-    }
-}
-
-impl From<oneshot::error::RecvError> for BusError {
-    fn from(_: oneshot::error::RecvError) -> Self {
-        Self::ChannelErr
+        Self::channel_closed("bus_data_send", None)
     }
 }
 

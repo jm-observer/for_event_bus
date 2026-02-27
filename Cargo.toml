@@ -11,7 +11,7 @@ resolver = "2"
 #custom-utils = {path = "../custom-utils"}
 
 [workspace.dependencies]
-tokio = {version="1.49.0", features = ["sync", "rt"]}
+tokio = {version="1.49.0", features = ["sync", "rt", "time"]}
 log = "0.4.29"
 for-event-bus-derive = { path = "./for-event-bus-derive"}
 custom-utils = {version = "0.10.21", features = ["derive"]}
