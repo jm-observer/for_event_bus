@@ -45,7 +45,8 @@ impl Worker {
                 if let Ok(msg) = upcast(event.clone()).downcast::<AEvent>() {
                     debug!("recv {:?}", msg);
                 } else if let Ok(_) = upcast(event.clone()).downcast::<Close>() {
-                    sleep(Duration::from_secs(60)).await;
+                    debug!("recv Close");
+                    // sleep(Duration::from_secs(60)).await;
                     break;
                 }
             }
