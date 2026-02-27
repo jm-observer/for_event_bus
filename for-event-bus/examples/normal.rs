@@ -9,7 +9,7 @@ async fn main() {
     // log
     custom_utils::logger::logger_stdout_debug();
     // init event bus
-    let copy_of_bus = Bus::<2>::init();
+    let copy_of_bus = Bus::<3>::init();
     // init worker and subscribe event
     Worker::init(&copy_of_bus).await;
     // init worker and dispatcher event

@@ -63,8 +63,7 @@ impl<T: Merge + Event> IdentityOfMerge<T> {
         for (type_id, name) in T::subscribe_types() {
             self.id
                 .tx_data
-                .send(BusData::Subscribe(self.id.id.clone(), type_id, name))
-                .await?;
+                .send(BusData::Subscribe(self.id.id.clone(), type_id, name))?;
         }
         Ok(())
     }

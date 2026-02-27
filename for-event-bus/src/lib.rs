@@ -6,7 +6,6 @@ mod worker;
 
 pub use bus::{Bus, BusError, EntryOfBus};
 use std::any::Any;
-use std::mem;
 use std::sync::Arc;
 pub use worker::{
     identity::{IdentityOfMerge, IdentityOfRx, IdentityOfSimple, IdentityOfTx, Merge},
@@ -34,5 +33,5 @@ impl Event for () {
 }
 
 pub fn upcast(event: BusEvent) -> Arc<dyn Any + Send + Sync + 'static> {
-    unsafe { mem::transmute::<Arc<dyn Event>, Arc<dyn Any + Send + Sync + 'static>>(event) }
+    event.as_any()
 }

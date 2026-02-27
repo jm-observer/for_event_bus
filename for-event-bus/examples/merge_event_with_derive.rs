@@ -1,7 +1,6 @@
 use for_event_bus::{BusError, Event, IdentityOfRx, Merge, ToWorker, Worker};
 use for_event_bus::{EntryOfBus, IdentityOfMerge, SimpleBus};
 use log::debug;
-use std::any::TypeId;
 use std::time::Duration;
 use tokio::spawn;
 use tokio::time::sleep;

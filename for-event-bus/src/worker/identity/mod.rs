@@ -1,11 +1,10 @@
 use crate::bus::{BusData, BusError, BusEvent};
 use crate::worker::WorkerId;
 use log::debug;
-use std::any::{Any, TypeId};
-use std::mem;
+use std::any::TypeId;
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 mod merge;
 mod simple;
@@ -17,26 +16,20 @@ pub use simple::IdentityOfSimple;
 #[derive(Clone)]
 pub struct IdentityOfTx {
     id: WorkerId,
-    tx_data: Sender<BusData>,
+    tx_data: UnboundedSender<BusData>,
 }
 
 impl IdentityOfTx {
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
         Ok(self
             .tx_data
-            .send(BusData::Subscribe(
-                self.id.clone(),
-                TypeId::of::<T>(),
-                T::name(),
-            ))
-            .await?)
+            .send(BusData::Subscribe(self.id.clone(), TypeId::of::<T>(), T::name()))?)
     }
 
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
         Ok(self
             .tx_data
-            .send(BusData::DispatchEvent(self.id.clone(), Arc::new(event)))
-            .await?)
+            .send(BusData::DispatchEvent(self.id.clone(), BusEvent::new(event)))?)
     }
 }
 
@@ -44,23 +37,19 @@ impl IdentityOfTx {
 pub struct IdentityOfRx {
     pub id: WorkerId,
     pub rx_event: Receiver<BusEvent>,
-    pub tx_data: Sender<BusData>,
+    pub tx_data: UnboundedSender<BusData>,
 }
 
 pub struct IdentityCommon {
     pub(crate) id: WorkerId,
     pub(crate) rx_event: Receiver<BusEvent>,
-    pub(crate) tx_data: Sender<BusData>,
+    pub(crate) tx_data: UnboundedSender<BusData>,
 }
 
 impl Drop for IdentityOfRx {
     fn drop(&mut self) {
-        // Worker 对象释放时，通知 Bus 执行退订与资源清理。
-        if self
-            .tx_data
-            .try_send(BusData::Drop(self.id.clone()))
-            .is_err()
-        {
+        // 控制面改为 unbounded 后，Drop 通知不受容量限制。
+        if self.tx_data.send(BusData::Drop(self.id.clone())).is_err() {
             debug!("{} send BusData::Drop fail", self.id);
         }
     }
@@ -114,11 +103,7 @@ impl IdentityOfRx {
     pub async fn recv<T: Event>(&mut self) -> Result<Arc<T>, BusError> {
         match self.recv_event().await {
             Ok(event) => {
-                // 先把 trait object 转成 Any，再做具体类型 downcast。
-                let any_event: Arc<dyn Any + Send + Sync + 'static> = unsafe {
-                    mem::transmute::<Arc<dyn Event>, Arc<dyn Any + Send + Sync + 'static>>(event)
-                };
-                // let any_event: Arc<dyn Any + Send + Sync + 'static> = Arc::new(&*event);
+                let any_event = event.as_any();
                 if let Ok(msg) = any_event.downcast::<T>() {
                     Ok(msg)
                 } else {
@@ -150,11 +135,7 @@ impl IdentityOfRx {
     pub fn try_recv<T: Event>(&mut self) -> Result<Option<Arc<T>>, BusError> {
         match self.try_recv_event()? {
             Some(event) => {
-                // let any_event: Arc<dyn Any + Send + Sync + 'static> = Arc::new(&*event);
-                // 非阻塞接收路径，转换逻辑与 recv 一致。
-                let any_event: Arc<dyn Any + Send + Sync + 'static> = unsafe {
-                    mem::transmute::<Arc<dyn Event>, Arc<dyn Any + Send + Sync + 'static>>(event)
-                };
+                let any_event = event.as_any();
                 if let Ok(msg) = any_event.downcast::<T>() {
                     Ok(Some(msg))
                 } else {
@@ -177,18 +158,12 @@ impl IdentityOfRx {
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
         Ok(self
             .tx_data
-            .send(BusData::Subscribe(
-                self.id.clone(),
-                TypeId::of::<T>(),
-                T::name(),
-            ))
-            .await?)
+            .send(BusData::Subscribe(self.id.clone(), TypeId::of::<T>(), T::name()))?)
     }
 
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
         Ok(self
             .tx_data
-            .send(BusData::DispatchEvent(self.id.clone(), Arc::new(event)))
-            .await?)
+            .send(BusData::DispatchEvent(self.id.clone(), BusEvent::new(event)))?)
     }
 }

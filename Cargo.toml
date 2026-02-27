@@ -1,6 +1,7 @@
 [workspace]
 members = ["for-event-bus", "for-event-bus-derive"]
-
+package.version = "0.2.0"
+resolver = "2"
 #[patch.crates-io]
 #for-event-bus-derive = { path = "./for-event-bus-derive"}
 
@@ -8,3 +9,10 @@ members = ["for-event-bus", "for-event-bus-derive"]
 
 #[patch.crates-io]
 #custom-utils = {path = "../custom-utils"}
+
+[workspace.dependencies]
+tokio = {version="1.49.0", features = ["sync", "rt"]}
+log = "0.4.29"
+for-event-bus-derive = { path = "./for-event-bus-derive"}
+custom-utils = {version = "0.10.21", features = ["derive"]}
+prettyplease = "0.2.37"

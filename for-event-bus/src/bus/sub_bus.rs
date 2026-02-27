@@ -30,7 +30,7 @@ pub(crate) struct EntryOfSubBus {
 
 impl EntryOfSubBus {
     pub fn name(&self) -> &'static str {
-        self.name.clone()
+        self.name
     }
 
     pub async fn send_trace(&self) {
@@ -90,7 +90,7 @@ impl<const CAP: usize> SubBus<CAP> {
         let (tx, rx) = channel(CAP);
         Self {
             type_id,
-            name: name.clone(),
+            name: name,
             rx,
             subscribers: Default::default(),
         }

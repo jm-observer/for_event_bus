@@ -9,13 +9,40 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::spawn;
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 mod sub_bus;
 
-pub type BusEvent = Arc<dyn Event>;
+#[derive(Clone)]
+pub struct BusEvent {
+    type_id: TypeId,
+    type_name: &'static str,
+    payload: Arc<dyn Any + Send + Sync + 'static>,
+}
+
+impl BusEvent {
+    pub fn new<T: Event>(event: T) -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            type_name: T::name(),
+            payload: Arc::new(event),
+        }
+    }
+
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
+    }
+
+    pub fn as_any(&self) -> Arc<dyn Any + Send + Sync + 'static> {
+        self.payload.clone()
+    }
+}
 
 #[derive(Debug)]
 pub enum BusError {
@@ -51,26 +78,26 @@ pub enum BusData {
 
 #[derive(Clone)]
 pub struct EntryOfBus {
-    tx: Sender<BusData>,
+    tx: UnboundedSender<BusData>,
 }
 
 impl EntryOfBus {
     pub async fn login_with_name(&self, name: String) -> Result<IdentityOfRx, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name)).await?;
+        self.tx.send(BusData::Login(tx, name))?;
         Ok(rx.await?.into())
     }
 
     pub async fn login<W: ToWorker>(&self) -> Result<IdentityOfRx, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name())).await?;
+        self.tx.send(BusData::Login(tx, W::name()))?;
         Ok(rx.await?.into())
     }
     pub async fn simple_login<W: ToWorker, T: Event>(
         &self,
     ) -> Result<IdentityOfSimple<T>, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name())).await?;
+        self.tx.send(BusData::Login(tx, W::name()))?;
         let rx: IdentityOfSimple<T> = rx.await?.into();
         rx.subscribe().await?;
         Ok(rx)
@@ -81,7 +108,7 @@ impl EntryOfBus {
         name: String,
     ) -> Result<IdentityOfSimple<T>, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name)).await?;
+        self.tx.send(BusData::Login(tx, name))?;
         let rx: IdentityOfSimple<T> = rx.await?.into();
         rx.subscribe().await?;
         Ok(rx)
@@ -91,7 +118,7 @@ impl EntryOfBus {
         &self,
     ) -> Result<IdentityOfMerge<T>, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name())).await?;
+        self.tx.send(BusData::Login(tx, W::name()))?;
         let rx: IdentityOfMerge<T> = rx.await?.into();
         rx.subscribe().await?;
         Ok(rx)
@@ -102,7 +129,7 @@ impl EntryOfBus {
         name: String,
     ) -> Result<IdentityOfMerge<T>, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name)).await?;
+        self.tx.send(BusData::Login(tx, name))?;
         let rx: IdentityOfMerge<T> = rx.await?.into();
         rx.subscribe().await?;
         Ok(rx)
@@ -110,8 +137,8 @@ impl EntryOfBus {
 }
 
 pub struct Bus<const CAP: usize> {
-    rx: Receiver<BusData>,
-    tx: Sender<BusData>,
+    rx: UnboundedReceiver<BusData>,
+    tx: UnboundedSender<BusData>,
     workers: HashMap<WorkerId, CopyOfWorker>,
     sub_buses: HashMap<TypeId, EntryOfSubBus>,
 }
@@ -124,7 +151,7 @@ impl<const CAP: usize> Drop for Bus<CAP> {
 
 impl<const CAP: usize> Bus<CAP> {
     pub fn init() -> EntryOfBus {
-        let (tx, rx) = channel(CAP);
+        let (tx, rx) = unbounded_channel();
         Self {
             rx,
             tx: tx.clone(),
@@ -147,7 +174,7 @@ impl<const CAP: usize> Bus<CAP> {
                 let time = Duration::from_secs(30);
                 loop {
                     sleep(time).await;
-                    if tx.send(BusData::Trace).await.is_err() {
+                    if tx.send(BusData::Trace).is_err() {
                         return;
                     }
                 }
@@ -187,7 +214,7 @@ impl<const CAP: usize> Bus<CAP> {
                     }
                     BusData::DispatchEvent(worker_id, event) => {
                         // 数据面路由：事件只进入“同 TypeId 的 SubBus”。
-                        if let Some(sub_buses) = self.sub_buses.get(&event.as_ref().type_id()) {
+                        if let Some(sub_buses) = self.sub_buses.get(&event.type_id()) {
                             debug!("{} dispatch {}", worker_id, sub_buses.name());
                             sub_buses.send_event(event).await;
                         } else {
