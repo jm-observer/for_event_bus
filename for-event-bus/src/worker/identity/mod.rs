@@ -186,6 +186,29 @@ impl IdentityOfRx {
         }
     }
 
+    pub async fn recv_merge<T: Merge + Event>(&mut self) -> Result<T, BusError> {
+        let event = self.recv_event().await?;
+        T::merge(event)
+    }
+
+    pub fn try_recv_merge<T: Merge + Event>(&mut self) -> Result<Option<T>, BusError> {
+        match self.try_recv_event()? {
+            None => Ok(None),
+            Some(event) => Ok(Some(T::merge(event)?)),
+        }
+    }
+
+    pub async fn subscribe_merge<T: Merge>(&self) -> Result<(), BusError> {
+        for (type_id, name) in T::subscribe_types() {
+            self.tx_data.send(BusData::Subscribe(
+                self.id.clone(),
+                RouteKey::Type(type_id),
+                name,
+            ))?;
+        }
+        Ok(())
+    }
+
     // pub fn subscribe(&self, type_id: TypeId) -> Result<(), BusError> {
     //     Ok(self.tx_data.send(BusData::Subscribe(self.id, type_id))?)
     // }

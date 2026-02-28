@@ -32,11 +32,9 @@ impl<T> From<IdentityCommon> for IdentityOfSimple<T> {
 
 impl<T: Event> IdentityOfSimple<T> {
     pub fn tx(&self) -> IdentityOfTx {
-        IdentityOfTx {
-            id: self.id.id.clone(),
-            tx_data: self.id.tx_data.clone(),
-        }
+        self.id.tx()
     }
+
     pub async fn recv(&mut self) -> Result<Arc<T>, BusError> {
         self.id.recv::<T>().await
     }
@@ -44,16 +42,20 @@ impl<T: Event> IdentityOfSimple<T> {
     pub fn try_recv(&mut self) -> Result<Option<Arc<T>>, BusError> {
         self.id.try_recv::<T>()
     }
+
     pub(crate) async fn subscribe(&self) -> Result<(), BusError> {
-        Ok(self.id.subscribe::<T>().await?)
+        self.id.subscribe::<T>().await
     }
 
-    pub async fn subscribe_with_key<E: Event + 'static>(&self, key: impl Into<String>) -> Result<(), BusError> {
+    pub async fn subscribe_with_key<E: Event + 'static>(
+        &self,
+        key: impl Into<String>,
+    ) -> Result<(), BusError> {
         Ok(self.id.subscribe_with_key::<E>(key).await?)
     }
 
     pub async fn dispatch_event<E: Event>(&self, event: E) -> Result<(), BusError> {
-        Ok(self.id.dispatch_event(event).await?)
+        self.id.dispatch_event(event).await
     }
 
     pub async fn dispatch_with_key<E: Event>(
@@ -61,6 +63,6 @@ impl<T: Event> IdentityOfSimple<T> {
         key: impl Into<String>,
         event: E,
     ) -> Result<(), BusError> {
-        Ok(self.id.dispatch_with_key(key, event).await?)
+        self.id.dispatch_with_key(key, event).await
     }
 }

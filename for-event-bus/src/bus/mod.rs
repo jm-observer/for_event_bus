@@ -151,7 +151,10 @@ impl EntryOfBus {
         Ok(rx.await?.into())
     }
 
-    pub async fn persistent_login_with_name(&self, name: impl Into<String>) -> Result<IdentityOfRx, BusError> {
+    pub async fn persistent_login_with_name(
+        &self,
+        name: impl Into<String>,
+    ) -> Result<IdentityOfRx, BusError> {
         let (tx, rx) = oneshot::channel();
         self.tx.send(BusData::Login(tx, name.into(), true))?;
         Ok(rx.await?.into())
