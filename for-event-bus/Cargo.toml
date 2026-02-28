@@ -16,7 +16,7 @@ include = [
 [dependencies]
 tokio.workspace = true
 log.workspace = true
-for-event-bus-derive = { path = "../for-event-bus-derive"}
+for-event-bus-derive = { path = "../for-event-bus-derive", version = "0.2.0"}
 
 [dev-dependencies]
 custom-utils.workspace = true
