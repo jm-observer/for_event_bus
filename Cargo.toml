@@ -11,7 +11,7 @@ resolver = "2"
 #custom-utils = {path = "../custom-utils"}
 
 [workspace.dependencies]
-tokio = {version="1.49.0", features = ["sync", "rt", "time"]}
+tokio = {version="1.49.0", features = ["sync", "rt", "time", "macros"]}
 log = "0.4.29"
 custom-utils = {version = "0.10.21", features = ["derive"]}
 prettyplease = "0.2.37"
