@@ -3,13 +3,16 @@ use crate::worker::WorkerId;
 use log::debug;
 use std::any::TypeId;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
+mod interval;
 mod merge;
 mod simple;
 
 use crate::Event;
+pub use interval::{IdentityOfInterval, IdentitySignal};
 pub use merge::{IdentityOfMerge, Merge};
 pub use simple::IdentityOfSimple;
 
@@ -115,6 +118,10 @@ impl IdentityOfRx {
             id: self.id.clone(),
             tx_data: self.tx_data.clone(),
         }
+    }
+
+    pub fn with_interval(self, duration: Duration) -> IdentityOfInterval {
+        IdentityOfInterval::new(self, duration)
     }
 
     // pub async fn recv_event<T: Send + Sync + 'static>(&mut self) -> Option<T> {

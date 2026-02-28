@@ -71,7 +71,7 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
     }
 
     let end = quote!(
-        impl Merge for #ident {
+        impl for_event_bus::Merge for #ident {
             fn merge(event: for_event_bus::BusEvent) -> Result<Self, BusError>
             where
                 Self: Sized,
@@ -112,7 +112,7 @@ fn general_worker(code: TokenStream2) -> Result<TokenStream2, syn::Error> {
     };
     let name = ident.to_string();
     let end = quote!(
-        impl ToWorker for #ident {
+        impl for_event_bus::ToWorker for #ident {
             fn name() -> String {
                 #name.to_string()
             }

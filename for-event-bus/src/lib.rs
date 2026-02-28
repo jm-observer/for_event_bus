@@ -8,7 +8,10 @@ pub use bus::{Bus, BusError, EntryOfBus};
 use std::any::Any;
 use std::sync::Arc;
 pub use worker::{
-    identity::{IdentityOfMerge, IdentityOfRx, IdentityOfSimple, IdentityOfTx, Merge},
+    identity::{
+        IdentityOfInterval, IdentityOfMerge, IdentityOfRx, IdentityOfSimple, IdentityOfTx,
+        IdentitySignal, Merge,
+    },
     ToWorker,
 };
 

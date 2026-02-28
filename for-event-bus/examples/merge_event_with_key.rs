@@ -74,10 +74,7 @@ impl WorkerDispatcher {
                 .dispatch_with_key(ORDER_KEY_1, AEvent)
                 .await
                 .unwrap();
-            self.identity
-                .dispatch_event(AEvent)
-                .await
-                .unwrap();
+            self.identity.dispatch_event(AEvent).await.unwrap();
             self.identity
                 .dispatch_with_key(ORDER_KEY_2, AEvent)
                 .await

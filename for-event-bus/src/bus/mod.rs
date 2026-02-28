@@ -1,5 +1,7 @@
 use crate::bus::sub_bus::{EntryOfSubBus, SubBus};
-use crate::worker::identity::{IdentityCommon, IdentityOfRx, IdentityOfSimple, Merge};
+use crate::worker::identity::{
+    IdentityCommon, IdentityOfInterval, IdentityOfRx, IdentityOfSimple, Merge,
+};
 use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
 use crate::{Event, IdentityOfMerge};
 use log::{debug, error};
@@ -144,6 +146,24 @@ impl EntryOfBus {
         self.tx.send(BusData::Login(tx, W::name()))?;
         Ok(rx.await?.into())
     }
+
+    pub async fn interval_login<W: ToWorker>(
+        &self,
+        duration: Duration,
+    ) -> Result<IdentityOfInterval, BusError> {
+        let id = self.login::<W>().await?;
+        Ok(id.with_interval(duration))
+    }
+
+    pub async fn interval_login_with_name(
+        &self,
+        name: String,
+        duration: Duration,
+    ) -> Result<IdentityOfInterval, BusError> {
+        let id = self.login_with_name(name).await?;
+        Ok(id.with_interval(duration))
+    }
+
     pub async fn simple_login<W: ToWorker, T: Event>(
         &self,
     ) -> Result<IdentityOfSimple<T>, BusError> {
@@ -251,13 +271,12 @@ impl<const CAP: usize> Bus<CAP> {
                                         RouteKey::TypeWithKey(*ty_id, key.clone())
                                     }
                                 };
-                                let should_remove = if let Some(sub_bus) =
-                                    self.sub_buses.get_mut(&route_key)
-                                {
-                                    sub_bus.send_unsubscribe(worker_id.clone()).await == 0
-                                } else {
-                                    false
-                                };
+                                let should_remove =
+                                    if let Some(sub_bus) = self.sub_buses.get_mut(&route_key) {
+                                        sub_bus.send_unsubscribe(worker_id.clone()).await == 0
+                                    } else {
+                                        false
+                                    };
                                 if should_remove {
                                     if let Some(sub_bus) = self.sub_buses.remove(&route_key) {
                                         // 该路由键已无订阅者，释放对应 SubBus。
@@ -275,9 +294,8 @@ impl<const CAP: usize> Bus<CAP> {
                             sub_buses.send_event(event).await;
                         } else {
                             debug!(
-                                "{} dispatch type_id {:?} that no one subscribe",
-                                worker_id,
-                                event.type_id()
+                                "{} dispatch route_key {:?} that no one subscribe",
+                                worker_id, route_key
                             );
                         }
                     }
