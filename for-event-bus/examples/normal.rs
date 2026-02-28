@@ -41,7 +41,7 @@ impl Worker {
         spawn(async move {
             self.identity.subscribe::<AEvent>().await.unwrap();
             self.identity.subscribe::<Close>().await.unwrap();
-            while let Ok(event) = self.identity.recv_event().await {
+            while let Some(event) = self.identity.recv_event().await {
                 if let Ok(msg) = upcast(event.clone()).downcast::<AEvent>() {
                     debug!("recv {:?}", msg);
                 } else if let Ok(_) = upcast(event.clone()).downcast::<Close>() {

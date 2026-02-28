@@ -1,24 +1,16 @@
-use crate::bus::{BusError, BusEvent};
+use crate::bus::BusError;
 use crate::worker::identity::{IdentityOfRx, IdentityOfTx};
 use crate::Event;
-use std::any::TypeId;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
-pub trait Merge {
-    fn merge(event: BusEvent) -> Result<Self, BusError>
-    where
-        Self: Sized;
-
-    fn subscribe_types() -> Vec<(TypeId, &'static str)>;
-}
-
-/// Merge 语义身份：把多种 BusEvent 聚合为一个业务事件 T。
-pub struct IdentityOfMerge<T: Merge> {
+/// Simple 语义身份：只关心单一事件类型 T。
+pub struct IdentityOfSimple<T> {
     pub(crate) id: IdentityOfRx,
     pub(crate) phantom: PhantomData<T>,
 }
 
-impl<T: Merge> IdentityOfMerge<T> {
+impl<T> IdentityOfSimple<T> {
     pub(crate) fn new(id: IdentityOfRx) -> Self {
         Self {
             id,
@@ -30,18 +22,22 @@ impl<T: Merge> IdentityOfMerge<T> {
         self.id.tx()
     }
 
-    pub async fn recv(&mut self) -> Result<Option<T>, BusError>
-    where
-        T: Event,
-    {
-        self.id.recv_merge::<T>().await
+    pub fn into_inner(self) -> IdentityOfRx {
+        self.id
+    }
+}
+
+impl<T: Event + 'static> IdentityOfSimple<T> {
+    pub async fn recv(&mut self) -> Result<Option<Arc<T>>, BusError> {
+        self.id.recv::<T>().await
     }
 
-    pub fn try_recv(&mut self) -> Result<Option<T>, BusError>
-    where
-        T: Event,
-    {
-        self.id.try_recv_merge::<T>()
+    pub fn try_recv(&mut self) -> Result<Option<Arc<T>>, BusError> {
+        self.id.try_recv::<T>()
+    }
+
+    pub async fn subscribe(&self) -> Result<(), BusError> {
+        self.id.subscribe::<T>().await
     }
 
     pub async fn subscribe_with_key<E: Event + 'static>(
@@ -61,9 +57,5 @@ impl<T: Merge> IdentityOfMerge<T> {
         event: E,
     ) -> Result<(), BusError> {
         self.id.dispatch_with_key(key, event).await
-    }
-
-    pub fn into_inner(self) -> IdentityOfRx {
-        self.id
     }
 }

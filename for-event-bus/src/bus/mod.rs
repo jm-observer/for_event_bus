@@ -1,5 +1,8 @@
 use crate::bus::sub_bus::{EntryOfSubBus, SubBus};
-use crate::worker::identity::{IdentityCommon, IdentityOfInterval, IdentityOfRx, Merge};
+use crate::worker::identity::{
+    FromTick, IdentityCommon, IdentityOfMerge, IdentityOfMergeTick, IdentityOfRx, IdentityOfSimple,
+    Merge,
+};
 use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
 use crate::Event;
 use log::{debug, error, warn};
@@ -164,23 +167,6 @@ impl EntryOfBus {
         Ok(rx.await?.into())
     }
 
-    pub async fn interval_login<W: ToWorker>(
-        &self,
-        duration: Duration,
-    ) -> Result<IdentityOfInterval, BusError> {
-        let id = self.login::<W>().await?;
-        Ok(id.with_interval(duration))
-    }
-
-    pub async fn interval_login_with_name(
-        &self,
-        name: impl Into<String>,
-        duration: Duration,
-    ) -> Result<IdentityOfInterval, BusError> {
-        let id = self.login_with_name(name.into()).await?;
-        Ok(id.with_interval(duration))
-    }
-
     pub async fn login_and_subscribe<W: ToWorker, T: Event + 'static>(
         &self,
     ) -> Result<IdentityOfRx, BusError> {
@@ -204,6 +190,59 @@ impl EntryOfBus {
         let id = self.login::<W>().await?;
         id.subscribe_merge::<T>().await?;
         Ok(id)
+    }
+
+    pub async fn simple_login<W: ToWorker, T: Event + 'static>(
+        &self,
+    ) -> Result<IdentityOfSimple<T>, BusError> {
+        let id = self.login::<W>().await?;
+        id.subscribe::<T>().await?;
+        Ok(id.into_simple())
+    }
+
+    pub async fn simple_login_with_name<T: Event + 'static>(
+        &self,
+        name: impl Into<String>,
+    ) -> Result<IdentityOfSimple<T>, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe::<T>().await?;
+        Ok(id.into_simple())
+    }
+
+    pub async fn merge_login<W: ToWorker, T: Event + Merge>(
+        &self,
+    ) -> Result<IdentityOfMerge<T>, BusError> {
+        let id = self.login::<W>().await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id.into_merge())
+    }
+
+    pub async fn merge_login_with_name<T: Event + Merge>(
+        &self,
+        name: impl Into<String>,
+    ) -> Result<IdentityOfMerge<T>, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id.into_merge())
+    }
+
+    pub async fn merge_tick_login<W: ToWorker, T: Event + Merge + FromTick>(
+        &self,
+        duration: Duration,
+    ) -> Result<IdentityOfMergeTick<T>, BusError> {
+        let id = self.login::<W>().await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id.into_merge_tick(duration))
+    }
+
+    pub async fn merge_tick_login_with_name<T: Event + Merge + FromTick>(
+        &self,
+        name: impl Into<String>,
+        duration: Duration,
+    ) -> Result<IdentityOfMergeTick<T>, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id.into_merge_tick(duration))
     }
 
     pub async fn login_and_subscribe_merge_with_name<T: Event + Merge>(
@@ -441,17 +480,8 @@ mod tests {
 
         bus.shutdown().await.unwrap();
 
-        let err = match worker.recv_event().await {
-            Ok(_) => panic!("expected channel closed error"),
-            Err(err) => err,
-        };
-        match err {
-            BusError::ChannelClosed { stage, worker } => {
-                assert_eq!(stage, "worker_recv_event");
-                assert_eq!(worker.as_deref(), Some("shutdown-worker"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let event = worker.recv_event().await;
+        assert!(event.is_none(), "expected channel closed");
     }
 
     #[derive(Debug)]
@@ -472,17 +502,8 @@ mod tests {
 
         bus.cleanup().await.unwrap();
 
-        let err = match old_worker.recv_event().await {
-            Ok(_) => panic!("expected old worker channel closed"),
-            Err(err) => err,
-        };
-        match err {
-            BusError::ChannelClosed { stage, worker } => {
-                assert_eq!(stage, "worker_recv_event");
-                assert_eq!(worker.as_deref(), Some("old-worker"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let event = old_worker.recv_event().await;
+        assert!(event.is_none(), "expected old worker channel closed");
 
         let mut new_worker = bus.login_with_name("new-worker".to_string()).await.unwrap();
         new_worker.subscribe::<CleanupEvent>().await.unwrap();
@@ -492,8 +513,8 @@ mod tests {
         dispatcher.dispatch_event(CleanupEvent).await.unwrap();
         let recv_result = timeout(Duration::from_millis(200), new_worker.recv_event()).await;
         let event = match recv_result {
-            Ok(Ok(event)) => event,
-            Ok(Err(err)) => panic!("unexpected bus error after cleanup: {err}"),
+            Ok(Some(event)) => event,
+            Ok(None) => panic!("unexpected closed channel after cleanup"),
             Err(_) => panic!("new worker did not receive event after cleanup"),
         };
         assert_eq!(event.type_name(), "CleanupEvent");
@@ -524,11 +545,11 @@ mod tests {
         let first = timeout(Duration::from_millis(200), persistent.recv_event())
             .await
             .unwrap()
-            .unwrap();
+            .expect("persistent worker channel closed unexpectedly");
         let second = timeout(Duration::from_millis(200), persistent.recv_event())
             .await
             .unwrap()
-            .unwrap();
+            .expect("persistent worker channel closed unexpectedly");
         let got = [first.type_name(), second.type_name()];
         assert!(got.contains(&"CleanupEvent"));
         assert!(got.contains(&"ShutdownEvent"));

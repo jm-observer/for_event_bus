@@ -9,10 +9,14 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 mod interval;
 mod merge;
+mod merge_tick;
+mod simple;
 
 use crate::Event;
-pub use interval::{IdentityOfInterval, IdentitySignal};
-pub use merge::Merge;
+pub use interval::FromTick;
+pub use merge::{IdentityOfMerge, Merge};
+pub use merge_tick::IdentityOfMergeTick;
+pub use simple::IdentityOfSimple;
 
 #[derive(Clone)]
 pub struct IdentityOfTx {
@@ -118,43 +122,36 @@ impl IdentityOfRx {
         }
     }
 
-    pub fn with_interval(self, duration: Duration) -> IdentityOfInterval {
-        IdentityOfInterval::new(self, duration)
+    pub fn into_simple<T>(self) -> IdentityOfSimple<T> {
+        IdentityOfSimple::new(self)
     }
 
-    // pub async fn recv_event<T: Send + Sync + 'static>(&mut self) -> Option<T> {
-    //     self.rx_event.recv().await
-    // }
-    pub fn rx_event_mut(&mut self) -> &mut Receiver<BusEvent> {
-        &mut self.rx_event
+    pub fn into_merge<T: Merge>(self) -> IdentityOfMerge<T> {
+        IdentityOfMerge::new(self)
     }
 
-    pub async fn recv_event(&mut self) -> Result<BusEvent, BusError> {
-        self.rx_event
-            .recv()
-            .await
-            .ok_or_else(|| BusError::channel_closed("worker_recv_event", Some(self.id.name())))
+    pub fn into_merge_tick<T: Merge + Event + FromTick>(
+        self,
+        duration: Duration,
+    ) -> IdentityOfMergeTick<T> {
+        IdentityOfMergeTick::new(self, duration)
     }
-    pub async fn recv<T: Event>(&mut self) -> Result<Arc<T>, BusError> {
+
+    pub async fn recv_event(&mut self) -> Option<BusEvent> {
+        self.rx_event.recv().await
+    }
+    pub async fn recv<T: Event>(&mut self) -> Result<Option<Arc<T>>, BusError> {
         match self.recv_event().await {
-            Ok(event) => {
+            Some(event) => {
                 let any_event = event.as_any();
                 if let Ok(msg) = any_event.downcast::<T>() {
-                    Ok(msg)
+                    Ok(Some(msg))
                 } else {
                     Err(BusError::downcast_failed(T::name(), event.type_name()))
                 }
             }
-            Err(e) => Err(e),
+            None => Ok(None),
         }
-
-        // let event = self.recv_event().await?;
-        // let any_event: Arc<dyn Any + Send + Sync> = Arc::new(&*event);
-        // if let Ok(msg) = any_event.downcast::<T>() {
-        //     return Ok(msg);
-        // } else {
-        //     Err(BusError::DowncastErr)
-        // }
     }
 
     pub fn try_recv_event(&mut self) -> Result<Option<BusEvent>, BusError> {
@@ -184,9 +181,11 @@ impl IdentityOfRx {
         }
     }
 
-    pub async fn recv_merge<T: Merge + Event>(&mut self) -> Result<T, BusError> {
-        let event = self.recv_event().await?;
-        T::merge(event)
+    pub async fn recv_merge<T: Merge + Event>(&mut self) -> Result<Option<T>, BusError> {
+        let Some(event) = self.recv_event().await else {
+            return Ok(None);
+        };
+        Ok(Some(T::merge(event)?))
     }
 
     pub fn try_recv_merge<T: Merge + Event>(&mut self) -> Result<Option<T>, BusError> {
@@ -207,15 +206,6 @@ impl IdentityOfRx {
         Ok(())
     }
 
-    // pub fn subscribe(&self, type_id: TypeId) -> Result<(), BusError> {
-    //     Ok(self.tx_data.send(BusData::Subscribe(self.id, type_id))?)
-    // }
-
-    // pub fn subscribe<T: Any>(&self, worker: &T) -> Result<(), BusError> {
-    //     Ok(self
-    //         .tx_data
-    //         .send(BusData::Subscribe(self.id, worker.type_id()))?)
-    // }
     pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::Subscribe(
             self.id.clone(),
@@ -259,6 +249,7 @@ impl IdentityOfRx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::BusData;
 
     #[derive(Debug)]
     struct A;
@@ -323,4 +314,5 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
 }
