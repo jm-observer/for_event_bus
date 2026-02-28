@@ -1,5 +1,7 @@
-use for_event_bus::{EntryOfBus, Event, IdentityOfInterval, IdentityOfRx, IdentitySignal, ToWorker};
 use for_event_bus::SimpleBus;
+use for_event_bus::{
+    EntryOfBus, Event, IdentityOfInterval, IdentityOfRx, IdentitySignal, ToWorker,
+};
 use log::debug;
 use std::time::Duration;
 use tokio::spawn;
@@ -90,7 +92,10 @@ impl WorkerDispatcher {
     fn run(self) {
         spawn(async move {
             for value in 0usize..5 {
-                self.identity.dispatch_event(AEvent { value }).await.unwrap();
+                self.identity
+                    .dispatch_event(AEvent { value })
+                    .await
+                    .unwrap();
                 sleep(Duration::from_millis(700)).await;
             }
             self.identity.dispatch_event(Close).await.unwrap();

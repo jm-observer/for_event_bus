@@ -61,13 +61,15 @@ pub(crate) struct CopyOfWorker {
     id: WorkerId,
     tx_event: Sender<BusEvent>,
     subscribe_keys: HashSet<SubscribeKey>,
+    persistent: bool,
 }
 impl CopyOfWorker {
-    pub fn init(id: WorkerId, tx_event: Sender<BusEvent>) -> Self {
+    pub fn init(id: WorkerId, tx_event: Sender<BusEvent>, persistent: bool) -> Self {
         Self {
             id,
             tx_event,
             subscribe_keys: Default::default(),
+            persistent,
         }
     }
     pub fn id(&self) -> WorkerId {
@@ -89,6 +91,10 @@ impl CopyOfWorker {
     }
     pub fn subscribe_keys(&self) -> std::collections::hash_set::Iter<'_, SubscribeKey> {
         self.subscribe_keys.iter()
+    }
+
+    pub fn persistent(&self) -> bool {
+        self.persistent
     }
 }
 
