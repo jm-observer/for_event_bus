@@ -4,7 +4,7 @@ use crate::worker::identity::{
 };
 use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
 use crate::{Event, IdentityOfMerge};
-use log::{debug, error};
+use log::{debug, error, warn};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -307,14 +307,14 @@ impl<const CAP: usize> Bus<CAP> {
                             debug!("{} dispatch {}", worker_id, sub_buses.name());
                             sub_buses.send_event(event).await;
                         } else {
-                            debug!(
+                            warn!(
                                 "{} dispatch route_key {:?} that no one subscribe",
                                 worker_id, route_key
                             );
                         }
                     }
                     BusData::Subscribe(worker_id, route_key, name) => {
-                        debug!("{} subscribe {}", worker_id, name);
+                        debug!("{} subscribe {route_key:?} {}", worker_id, name);
                         if let Some(worker) = self.workers.get_mut(&worker_id) {
                             match &route_key {
                                 RouteKey::Type(typeid) => worker.subscribe_event(*typeid),

@@ -27,6 +27,7 @@ struct Close;
 #[derive(Debug, Clone, Merge, Event)]
 enum MergeEvent {
     AEvent(AEvent),
+    #[merge(skip)]
     Close(Close),
 }
 
@@ -39,7 +40,7 @@ impl WorkerA {
     pub async fn init(bus: &EntryOfBus, key: &str) {
         let identity = bus.merge_login::<WorkerA, MergeEvent>().await.unwrap();
         // 增加 keyed 订阅：只有同 key 的事件才会进入这个 worker。
-        identity.subscribe_with_key(key).await.unwrap();
+        identity.subscribe_with_key::<Close>(key).await.unwrap();
         Self { identity }.run();
     }
 
@@ -77,6 +78,10 @@ impl WorkerDispatcher {
             self.identity.dispatch_event(AEvent).await.unwrap();
             self.identity
                 .dispatch_with_key(ORDER_KEY_2, AEvent)
+                .await
+                .unwrap();
+            self.identity
+                .dispatch_with_key(ORDER_KEY_2, Close)
                 .await
                 .unwrap();
             self.identity

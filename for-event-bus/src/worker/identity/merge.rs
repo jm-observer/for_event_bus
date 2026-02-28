@@ -70,15 +70,8 @@ impl<T: Merge + Event> IdentityOfMerge<T> {
         Ok(())
     }
 
-    pub async fn subscribe_with_key(&self, key: impl Into<String>) -> Result<(), BusError> {
-        let key = key.into();
-        for (type_id, name) in T::subscribe_types() {
-            self.id.tx_data.send(BusData::Subscribe(
-                self.id.id.clone(),
-                RouteKey::TypeWithKey(type_id, key.clone()),
-                name,
-            ))?;
-        }
+    pub async fn subscribe_with_key<E: Event>(&self, key: impl Into<String>) -> Result<(), BusError> {
+        self.id.subscribe_with_key::<E>(key).await?;
         Ok(())
     }
 

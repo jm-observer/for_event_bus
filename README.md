@@ -73,5 +73,6 @@ flowchart TD
 - 恰好 1 个字段
 - 字段类型是具体类型路径（如 `module::CloseEvent`）
 - 所有 variant 的字段类型不能重复
+- 可选 `#[merge(skip)]` 标记：该 variant 会从 `subscribe_types()` 中排除（不自动订阅），但仍保留在 `merge` 的 downcast 逻辑中
 
 不满足时会在编译期报错（`compile_error!`），而不是运行时再暴露问题。

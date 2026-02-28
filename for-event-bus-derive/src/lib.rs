@@ -1,9 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::__private::TokenStream2;
-use syn::{Fields, Item, ItemEnum, Type};
+use syn::{Attribute, Fields, Item, ItemEnum, Type};
 
-#[proc_macro_derive(Merge)]
+#[proc_macro_derive(Merge, attributes(merge))]
 pub fn merge_derive(input: TokenStream) -> TokenStream {
     match general_merge(input.into()) {
         Ok(tokens) => tokens.into(),
@@ -32,6 +32,8 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
     let mut seen = std::collections::HashSet::new();
 
     for variant in item_enum.variants {
+        let skip_subscribe = is_merge_skip(&variant.attrs)?;
+
         let var_ident = variant.ident.clone();
         let field = match &variant.fields {
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => fields.unnamed.first().unwrap(),
@@ -65,9 +67,11 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
                 Ok(Self::#var_ident(a_event.as_ref().clone()))
             }
         ));
-        type_ids.push(quote!(
-            (std::any::TypeId::of::<#path>(), stringify!(#path))
-        ));
+        if !skip_subscribe {
+            type_ids.push(quote!(
+                (std::any::TypeId::of::<#path>(), stringify!(#path))
+            ));
+        }
     }
 
     let end = quote!(
@@ -89,6 +93,25 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
         }
     );
     Ok(end)
+}
+
+fn is_merge_skip(attrs: &[Attribute]) -> Result<bool, syn::Error> {
+    let mut skip = false;
+    for attr in attrs {
+        if !attr.path().is_ident("merge") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("skip") {
+                skip = true;
+                return Ok(());
+            }
+
+            Err(meta.error("unsupported merge option, expected: skip"))
+        })?;
+    }
+    Ok(skip)
 }
 
 #[proc_macro_derive(Worker)]
@@ -177,5 +200,32 @@ mod tests {
         };
         let err = general_merge(code).unwrap_err().to_string();
         assert!(err.contains("duplicate event type"));
+    }
+
+    #[test]
+    fn merge_allows_skip_variant() {
+        let code = quote! {
+            enum Good {
+                A(u32),
+                #[merge(skip)]
+                B(String),
+            }
+        };
+        let tokens = general_merge(code).unwrap().to_string();
+        assert!(tokens.contains("TypeId :: of :: < u32 >"));
+        assert!(!tokens.contains("TypeId :: of :: < String >"));
+        assert!(tokens.contains("Self :: B"));
+    }
+
+    #[test]
+    fn merge_rejects_unknown_merge_option() {
+        let code = quote! {
+            enum Bad {
+                #[merge(nope)]
+                A(u32),
+            }
+        };
+        let err = general_merge(code).unwrap_err().to_string();
+        assert!(err.contains("unsupported merge option"));
     }
 }
