@@ -1,5 +1,5 @@
 use for_event_bus::{BusError, Event, IdentityOfRx, Merge, ToWorker, Worker};
-use for_event_bus::{EntryOfBus, IdentityOfMerge, SimpleBus};
+use for_event_bus::{EntryOfBus, SimpleBus};
 use log::debug;
 use std::time::Duration;
 use tokio::spawn;
@@ -33,12 +33,15 @@ enum MergeEvent {
 
 #[derive(Worker)]
 struct WorkerA {
-    identity: IdentityOfMerge<MergeEvent>,
+    identity: IdentityOfRx,
 }
 
 impl WorkerA {
     pub async fn init(bus: &EntryOfBus, key: &str) {
-        let identity = bus.merge_login::<WorkerA, MergeEvent>().await.unwrap();
+        let identity = bus
+            .login_and_subscribe_merge::<WorkerA, MergeEvent>()
+            .await
+            .unwrap();
         // 增加 keyed 订阅：只有同 key 的事件才会进入这个 worker。
         identity.subscribe_with_key::<Close>(key).await.unwrap();
         Self { identity }.run();
@@ -46,7 +49,7 @@ impl WorkerA {
 
     fn run(mut self) {
         spawn(async move {
-            while let Ok(event) = self.identity.recv().await {
+            while let Ok(event) = self.identity.recv_merge::<MergeEvent>().await {
                 debug!("recv keyed merge event: {:?}", event);
             }
         });

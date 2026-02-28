@@ -1,6 +1,6 @@
 use for_event_bus::{upcast, Event, IdentityOfRx};
 use for_event_bus::{BusError, Merge, ToWorker};
-use for_event_bus::{EntryOfBus, IdentityOfMerge, SimpleBus};
+use for_event_bus::{EntryOfBus, SimpleBus};
 use log::debug;
 use std::any::TypeId;
 use std::time::Duration;
@@ -58,7 +58,7 @@ impl Merge for MergeEvent {
 }
 
 struct Worker {
-    identity: IdentityOfMerge<MergeEvent>,
+    identity: IdentityOfRx,
 }
 
 impl ToWorker for Worker {
@@ -69,12 +69,15 @@ impl ToWorker for Worker {
 
 impl Worker {
     pub async fn init(bus: &EntryOfBus) {
-        let identity = bus.merge_login::<Worker, MergeEvent>().await.unwrap();
+        let identity = bus
+            .login_and_subscribe_merge::<Worker, MergeEvent>()
+            .await
+            .unwrap();
         Self { identity }.run();
     }
     fn run(mut self) {
         spawn(async move {
-            while let Ok(event) = self.identity.recv().await {
+            while let Ok(event) = self.identity.recv_merge::<MergeEvent>().await {
                 debug!("{:?}", event);
             }
         });

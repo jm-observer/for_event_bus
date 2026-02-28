@@ -1,4 +1,4 @@
-use for_event_bus::{upcast, Bus, EntryOfBus, Event, IdentityOfRx, IdentityOfSimple, ToWorker};
+use for_event_bus::{upcast, Bus, EntryOfBus, Event, IdentityOfRx, ToWorker};
 use log::debug;
 use std::time::Duration;
 use tokio::spawn;
@@ -55,7 +55,7 @@ impl Worker {
 }
 
 struct WorkerDispatcher {
-    identity: IdentityOfSimple<()>,
+    identity: IdentityOfRx,
 }
 
 impl ToWorker for WorkerDispatcher {
@@ -66,7 +66,7 @@ impl ToWorker for WorkerDispatcher {
 
 impl WorkerDispatcher {
     pub async fn init(bus: &EntryOfBus) {
-        let identity = bus.simple_login::<WorkerDispatcher, ()>().await.unwrap();
+        let identity = bus.login::<WorkerDispatcher>().await.unwrap();
         Self { identity }.run();
     }
     fn run(self) {

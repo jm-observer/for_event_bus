@@ -1,5 +1,4 @@
-use for_event_bus::{EntryOfBus, Event, ToWorker};
-use for_event_bus::{IdentityOfSimple, SimpleBus};
+use for_event_bus::{EntryOfBus, Event, IdentityOfRx, SimpleBus, ToWorker};
 use log::debug;
 use std::any::Any;
 use std::time::Duration;
@@ -47,7 +46,7 @@ struct AEvent;
 struct Close;
 
 struct Worker {
-    identity: IdentityOfSimple<OneEvent<AEvent, Close>>,
+    identity: IdentityOfRx,
 }
 
 impl ToWorker for Worker {
@@ -59,14 +58,14 @@ impl ToWorker for Worker {
 impl Worker {
     pub async fn init(bus: &EntryOfBus) {
         let identity = bus
-            .simple_login::<Self, OneEvent<AEvent, Close>>()
+            .login_and_subscribe::<Self, OneEvent<AEvent, Close>>()
             .await
             .unwrap();
         Self { identity }.run();
     }
     fn run(mut self) {
         spawn(async move {
-            while let Ok(event) = self.identity.recv().await {
+            while let Ok(event) = self.identity.recv::<OneEvent<AEvent, Close>>().await {
                 match event.as_ref() {
                     OneEvent::Event(event) => {
                         debug!("WorkerA recv {:?}", event);
@@ -82,7 +81,7 @@ impl Worker {
 }
 
 struct WorkerDispatcher {
-    identity: IdentityOfSimple<()>,
+    identity: IdentityOfRx,
 }
 
 impl ToWorker for WorkerDispatcher {
@@ -93,7 +92,7 @@ impl ToWorker for WorkerDispatcher {
 
 impl WorkerDispatcher {
     pub async fn init(bus: &EntryOfBus) {
-        let identity = bus.simple_login::<Self, ()>().await.unwrap();
+        let identity = bus.login::<Self>().await.unwrap();
         Self { identity }.run();
     }
     fn run(self) {

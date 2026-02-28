@@ -1,9 +1,7 @@
 use crate::bus::sub_bus::{EntryOfSubBus, SubBus};
-use crate::worker::identity::{
-    IdentityCommon, IdentityOfInterval, IdentityOfRx, IdentityOfSimple, Merge,
-};
+use crate::worker::identity::{IdentityCommon, IdentityOfInterval, IdentityOfRx, Merge};
 use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
-use crate::{Event, IdentityOfMerge};
+use crate::Event;
 use log::{debug, error, warn};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -183,46 +181,38 @@ impl EntryOfBus {
         Ok(id.with_interval(duration))
     }
 
-    pub async fn simple_login<W: ToWorker, T: Event>(
+    pub async fn login_and_subscribe<W: ToWorker, T: Event + 'static>(
         &self,
-    ) -> Result<IdentityOfSimple<T>, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name(), false))?;
-        let rx: IdentityOfSimple<T> = rx.await?.into();
-        rx.subscribe().await?;
-        Ok(rx)
+    ) -> Result<IdentityOfRx, BusError> {
+        let id = self.login::<W>().await?;
+        id.subscribe::<T>().await?;
+        Ok(id)
     }
 
-    pub async fn simple_login_with_name<T: Event>(
+    pub async fn login_and_subscribe_with_name<T: Event + 'static>(
         &self,
         name: impl Into<String>,
-    ) -> Result<IdentityOfSimple<T>, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name.into(), false))?;
-        let rx: IdentityOfSimple<T> = rx.await?.into();
-        rx.subscribe().await?;
-        Ok(rx)
+    ) -> Result<IdentityOfRx, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe::<T>().await?;
+        Ok(id)
     }
 
-    pub async fn merge_login<W: ToWorker, T: Event + Merge>(
+    pub async fn login_and_subscribe_merge<W: ToWorker, T: Event + Merge>(
         &self,
-    ) -> Result<IdentityOfMerge<T>, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name(), false))?;
-        let rx: IdentityOfMerge<T> = rx.await?.into();
-        rx.subscribe().await?;
-        Ok(rx)
+    ) -> Result<IdentityOfRx, BusError> {
+        let id = self.login::<W>().await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id)
     }
 
-    pub async fn merge_login_with_name<T: Event + Merge>(
+    pub async fn login_and_subscribe_merge_with_name<T: Event + Merge>(
         &self,
         name: impl Into<String>,
-    ) -> Result<IdentityOfMerge<T>, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name.into(), false))?;
-        let rx: IdentityOfMerge<T> = rx.await?.into();
-        rx.subscribe().await?;
-        Ok(rx)
+    ) -> Result<IdentityOfRx, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe_merge::<T>().await?;
+        Ok(id)
     }
 
     /// 优雅关闭总线：

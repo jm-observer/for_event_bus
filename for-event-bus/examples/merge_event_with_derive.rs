@@ -1,5 +1,5 @@
 use for_event_bus::{BusError, Event, IdentityOfRx, Merge, ToWorker, Worker};
-use for_event_bus::{EntryOfBus, IdentityOfMerge, SimpleBus};
+use for_event_bus::{EntryOfBus, SimpleBus};
 use log::debug;
 use std::time::Duration;
 use tokio::spawn;
@@ -34,7 +34,7 @@ enum MergeEvent {
 
 #[derive(Worker)]
 struct WorkerA {
-    identity: IdentityOfMerge<MergeEvent>,
+    identity: IdentityOfRx,
 }
 
 // impl ToWorker for Worker {
@@ -45,12 +45,15 @@ struct WorkerA {
 
 impl WorkerA {
     pub async fn init(bus: &EntryOfBus) {
-        let identity = bus.merge_login::<WorkerA, MergeEvent>().await.unwrap();
+        let identity = bus
+            .login_and_subscribe_merge::<WorkerA, MergeEvent>()
+            .await
+            .unwrap();
         Self { identity }.run();
     }
     fn run(mut self) {
         spawn(async move {
-            while let Ok(event) = self.identity.recv().await {
+            while let Ok(event) = self.identity.recv_merge::<MergeEvent>().await {
                 debug!("{:?}", event);
             }
         });

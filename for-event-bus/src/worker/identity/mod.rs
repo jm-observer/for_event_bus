@@ -9,12 +9,10 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 mod interval;
 mod merge;
-mod simple;
 
 use crate::Event;
 pub use interval::{IdentityOfInterval, IdentitySignal};
-pub use merge::{IdentityOfMerge, Merge};
-pub use simple::IdentityOfSimple;
+pub use merge::Merge;
 
 #[derive(Clone)]
 pub struct IdentityOfTx {
