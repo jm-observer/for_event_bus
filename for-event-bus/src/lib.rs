@@ -16,7 +16,6 @@ pub use worker::{
 };
 
 pub use crate::bus::BusEvent;
-#[cfg(feature = "derive")]
 pub use for_event_bus_derive::{Event, Merge, Worker};
 
 pub type SimpleBus = Bus<1000>;
