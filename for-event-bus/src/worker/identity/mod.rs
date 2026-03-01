@@ -14,7 +14,7 @@ mod simple;
 
 use crate::Event;
 pub use interval::FromTick;
-pub use merge::{IdentityOfMerge, Merge};
+pub use merge::{IdentityOfMerge, Merge, MergeContains, MergeSkip};
 pub use merge_tick::IdentityOfMergeTick;
 pub use simple::IdentityOfSimple;
 
@@ -25,30 +25,11 @@ pub struct IdentityOfTx {
 }
 
 impl IdentityOfTx {
-    pub async fn subscribe<T: Event + 'static>(&self) -> Result<(), BusError> {
-        Ok(self.tx_data.send(BusData::Subscribe(
-            self.id.clone(),
-            RouteKey::Type(TypeId::of::<T>()),
-            T::name(),
-        ))?)
-    }
-
     pub async fn dispatch_event<T: Event>(&self, event: T) -> Result<(), BusError> {
         Ok(self.tx_data.send(BusData::DispatchEvent(
             self.id.clone(),
             RouteKey::Type(TypeId::of::<T>()),
             BusEvent::new(event),
-        ))?)
-    }
-
-    pub async fn subscribe_with_key<T: Event + 'static>(
-        &self,
-        key: impl Into<String>,
-    ) -> Result<(), BusError> {
-        Ok(self.tx_data.send(BusData::Subscribe(
-            self.id.clone(),
-            RouteKey::TypeWithKey(TypeId::of::<T>(), key.into()),
-            T::name(),
         ))?)
     }
 
@@ -130,7 +111,7 @@ impl IdentityOfRx {
         IdentityOfMerge::new(self)
     }
 
-    pub fn into_merge_tick<T: Merge + Event + FromTick>(
+    pub fn into_merge_tick<T: Merge + FromTick>(
         self,
         duration: Duration,
     ) -> IdentityOfMergeTick<T> {

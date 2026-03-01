@@ -1,8 +1,9 @@
 use crate::bus::{BusError, BusEvent};
-use crate::worker::identity::{IdentityOfRx, IdentityOfTx};
+use crate::worker::identity::{FromTick, IdentityOfMergeTick, IdentityOfRx, IdentityOfTx};
 use crate::Event;
 use std::any::TypeId;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 pub trait Merge {
     fn merge(event: BusEvent) -> Result<Self, BusError>
@@ -11,6 +12,12 @@ pub trait Merge {
 
     fn subscribe_types() -> Vec<(TypeId, &'static str)>;
 }
+
+/// 标记某个 Merge 枚举是否包含并支持子事件类型 E。
+pub trait MergeContains<E> {}
+
+/// 标记某个 Merge 枚举是否将子事件类型 E 配置为 `#[merge(skip)]`。
+pub trait MergeSkip<E> {}
 
 /// Merge 语义身份：把多种 BusEvent 聚合为一个业务事件 T。
 pub struct IdentityOfMerge<T: Merge> {
@@ -47,7 +54,10 @@ impl<T: Merge> IdentityOfMerge<T> {
     pub async fn subscribe_with_key<E: Event + 'static>(
         &self,
         key: impl Into<String>,
-    ) -> Result<(), BusError> {
+    ) -> Result<(), BusError>
+    where
+        T: MergeSkip<E>,
+    {
         self.id.subscribe_with_key::<E>(key).await
     }
 
@@ -63,7 +73,10 @@ impl<T: Merge> IdentityOfMerge<T> {
         self.id.dispatch_with_key(key, event).await
     }
 
-    pub fn into_inner(self) -> IdentityOfRx {
-        self.id
+    pub fn into_merge_tick(self, duration: Duration) -> IdentityOfMergeTick<T>
+    where
+        T: Event + FromTick,
+    {
+        self.id.into_merge_tick(duration)
     }
 }

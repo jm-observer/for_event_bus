@@ -29,50 +29,102 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
     let ident = item_enum.ident;
     let mut tokens = Vec::new();
     let mut type_ids = Vec::new();
+    let mut into_impls = Vec::new();
+    let mut contains_impls = Vec::new();
+    let mut tick_ctor: Option<TokenStream2> = None;
     let mut seen = std::collections::HashSet::new();
 
     for variant in item_enum.variants {
-        let skip_subscribe = is_merge_skip(&variant.attrs)?;
-
+        let opts = parse_merge_options(&variant.attrs)?;
+        let skip_subscribe = opts.skip || opts.tick;
         let var_ident = variant.ident.clone();
-        let field = match &variant.fields {
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => fields.unnamed.first().unwrap(),
-            _ => {
+        if opts.tick {
+            if tick_ctor.is_some() {
                 return Err(syn::Error::new_spanned(
                     &variant,
-                    "each enum variant in derive(Merge) must be tuple-style with exactly one field, e.g. Close(CloseEvent)",
+                    "only one #[merge(tick)] variant is allowed",
                 ));
             }
-        };
-
-        let path = if let Type::Path(path) = &field.ty {
-            path
+            let ctor = match &variant.fields {
+                Fields::Unit => quote!(Self::#var_ident),
+                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    quote!(Self::#var_ident(Default::default()))
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &variant,
+                        "#[merge(tick)] variant must be unit-style or tuple-style with exactly one field",
+                    ));
+                }
+            };
+            tick_ctor = Some(ctor);
         } else {
-            return Err(syn::Error::new_spanned(
-                &field.ty,
-                "variant field must be a concrete type path, e.g. module::CloseEvent",
-            ));
-        };
+            let field = match &variant.fields {
+                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    fields.unnamed.first().unwrap()
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &variant,
+                        "each enum variant in derive(Merge) must be tuple-style with exactly one field, e.g. Close(CloseEvent)",
+                    ));
+                }
+            };
 
-        let type_key = quote!(#path).to_string();
-        if !seen.insert(type_key.clone()) {
-            return Err(syn::Error::new_spanned(
-                &field.ty,
-                format!("duplicate event type in derive(Merge): {type_key}"),
-            ));
-        }
+            let path = if let Type::Path(path) = &field.ty {
+                path
+            } else {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "variant field must be a concrete type path, e.g. module::CloseEvent",
+                ));
+            };
 
-        tokens.push(quote!(
-            if let Ok(a_event) = payload.clone().downcast::<#path>() {
-                Ok(Self::#var_ident(a_event.as_ref().clone()))
+            let type_key = quote!(#path).to_string();
+            if !seen.insert(type_key.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    format!("duplicate event type in derive(Merge): {type_key}"),
+                ));
             }
-        ));
-        if !skip_subscribe {
-            type_ids.push(quote!(
-                (std::any::TypeId::of::<#path>(), stringify!(#path))
+
+            tokens.push(quote!(
+                if let Ok(a_event) = payload.clone().downcast::<#path>() {
+                    Ok(Self::#var_ident(a_event.as_ref().clone()))
+                }
             ));
+            into_impls.push(quote!(
+                impl From<#path> for #ident {
+                    fn from(value: #path) -> Self {
+                        Self::#var_ident(value)
+                    }
+                }
+            ));
+            contains_impls.push(quote!(
+                impl for_event_bus::MergeContains<#path> for #ident {}
+            ));
+            if opts.skip {
+                contains_impls.push(quote!(
+                    impl for_event_bus::MergeSkip<#path> for #ident {}
+                ));
+            }
+            if !skip_subscribe {
+                type_ids.push(quote!(
+                    (std::any::TypeId::of::<#path>(), stringify!(#path))
+                ));
+            }
         }
     }
+
+    let tick_impl = tick_ctor.map(|ctor| {
+        quote!(
+            impl for_event_bus::FromTick for #ident {
+                fn from_tick() -> Self {
+                    #ctor
+                }
+            }
+        )
+    });
 
     let end = quote!(
         impl for_event_bus::Merge for #ident {
@@ -91,12 +143,24 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
                 vec![#(#type_ids),*]
             }
         }
+
+        #(#into_impls)*
+        #(#contains_impls)*
+        #tick_impl
     );
     Ok(end)
 }
 
-fn is_merge_skip(attrs: &[Attribute]) -> Result<bool, syn::Error> {
-    let mut skip = false;
+struct MergeOptions {
+    skip: bool,
+    tick: bool,
+}
+
+fn parse_merge_options(attrs: &[Attribute]) -> Result<MergeOptions, syn::Error> {
+    let mut opts = MergeOptions {
+        skip: false,
+        tick: false,
+    };
     for attr in attrs {
         if !attr.path().is_ident("merge") {
             continue;
@@ -104,14 +168,18 @@ fn is_merge_skip(attrs: &[Attribute]) -> Result<bool, syn::Error> {
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("skip") {
-                skip = true;
+                opts.skip = true;
+                return Ok(());
+            }
+            if meta.path.is_ident("tick") {
+                opts.tick = true;
                 return Ok(());
             }
 
-            Err(meta.error("unsupported merge option, expected: skip"))
+            Err(meta.error("unsupported merge option, expected: skip | tick"))
         })?;
     }
-    Ok(skip)
+    Ok(opts)
 }
 
 #[proc_macro_derive(Worker)]
@@ -227,5 +295,62 @@ mod tests {
         };
         let err = general_merge(code).unwrap_err().to_string();
         assert!(err.contains("unsupported merge option"));
+    }
+
+    #[test]
+    fn merge_generates_from_impls_for_each_variant() {
+        let code = quote! {
+            enum Good {
+                A(u32),
+                B(String),
+            }
+        };
+        let tokens = general_merge(code).unwrap().to_string();
+        assert!(tokens.contains("impl From < u32 > for Good"));
+        assert!(tokens.contains("impl From < String > for Good"));
+        assert!(tokens.contains("impl for_event_bus :: MergeContains < u32 > for Good"));
+        assert!(tokens.contains("impl for_event_bus :: MergeContains < String > for Good"));
+    }
+
+    #[test]
+    fn merge_generates_skip_marker_only_for_skip_variant() {
+        let code = quote! {
+            enum Good {
+                A(u32),
+                #[merge(skip)]
+                B(String),
+            }
+        };
+        let tokens = general_merge(code).unwrap().to_string();
+        assert!(!tokens.contains("impl for_event_bus :: MergeSkip < u32 > for Good"));
+        assert!(tokens.contains("impl for_event_bus :: MergeSkip < String > for Good"));
+    }
+
+    #[test]
+    fn merge_generates_from_tick_for_tick_unit_variant() {
+        let code = quote! {
+            enum Good {
+                A(u32),
+                #[merge(tick)]
+                Tick,
+            }
+        };
+        let tokens = general_merge(code).unwrap().to_string();
+        assert!(tokens.contains("impl for_event_bus :: FromTick for Good"));
+        assert!(tokens.contains("Self :: Tick"));
+    }
+
+    #[test]
+    fn merge_rejects_multiple_tick_variants() {
+        let code = quote! {
+            enum Bad {
+                #[merge(tick)]
+                TickA,
+                #[merge(tick)]
+                TickB,
+            }
+        };
+        let err = general_merge(code).unwrap_err().to_string();
+        assert!(err.contains("only one #[merge(tick)] variant"));
     }
 }

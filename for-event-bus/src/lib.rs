@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub use worker::{
     identity::{
         FromTick, IdentityOfMerge, IdentityOfMergeTick, IdentityOfRx, IdentityOfSimple,
-        IdentityOfTx, Merge,
+        IdentityOfTx, Merge, MergeContains, MergeSkip,
     },
     ToWorker,
 };

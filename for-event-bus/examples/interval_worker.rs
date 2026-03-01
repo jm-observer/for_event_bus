@@ -1,9 +1,8 @@
 use for_event_bus::SimpleBus;
 use for_event_bus::{
-    BusError, EntryOfBus, Event, FromTick, IdentityOfMergeTick, IdentityOfRx, Merge, ToWorker,
+    BusError, EntryOfBus, Event, IdentityOfMergeTick, IdentityOfRx, Merge, ToWorker,
 };
 use log::debug;
-use std::any::TypeId;
 use std::time::Duration;
 use tokio::spawn;
 use tokio::time::sleep;
@@ -19,51 +18,21 @@ async fn main() {
     sleep(Duration::from_secs(8)).await;
 }
 
-#[derive(Debug, Event)]
+#[derive(Debug, Clone, Event)]
 struct AEvent {
     value: usize,
 }
 
-#[derive(Debug, Event)]
+#[derive(Debug, Clone, Event)]
 struct Close;
 
-#[derive(Debug)]
+#[derive(Debug, Merge)]
 enum IntervalSignal {
     AEvent(AEvent),
-    Close,
+    #[merge(skip)]
+    Close(Close),
+    #[merge(tick)]
     Tick,
-}
-
-impl Event for IntervalSignal {
-    fn name() -> &'static str {
-        "IntervalSignal"
-    }
-}
-
-impl Merge for IntervalSignal {
-    fn merge(event: for_event_bus::BusEvent) -> Result<Self, BusError> {
-        let any = event.as_any();
-        if let Ok(msg) = any.clone().downcast::<AEvent>() {
-            Ok(Self::AEvent(AEvent { value: msg.value }))
-        } else if any.downcast::<Close>().is_ok() {
-            Ok(Self::Close)
-        } else {
-            Err(BusError::downcast_failed("AEvent|Close", event.type_name()))
-        }
-    }
-
-    fn subscribe_types() -> Vec<(TypeId, &'static str)> {
-        vec![
-            (TypeId::of::<AEvent>(), AEvent::name()),
-            (TypeId::of::<Close>(), Close::name()),
-        ]
-    }
-}
-
-impl FromTick for IntervalSignal {
-    fn from_tick() -> Self {
-        Self::Tick
-    }
 }
 
 struct IntervalWorker {
@@ -82,20 +51,21 @@ impl IntervalWorker {
             .merge_tick_login::<Self, IntervalSignal>(Duration::from_secs(1))
             .await
             .unwrap();
+        identity.subscribe_with_key::<Close>("Close").await.unwrap();
         Self { identity }.run();
     }
 
     fn run(mut self) {
         spawn(async move {
             loop {
-                match self.identity.recv_signal().await {
+                match self.identity.recv().await {
                     Ok(Some(IntervalSignal::Tick)) => {
                         debug!("tick: do periodic job");
                     }
                     Ok(Some(IntervalSignal::AEvent(msg))) => {
                         debug!("recv AEvent value={}", msg.value);
                     }
-                    Ok(Some(IntervalSignal::Close)) => {
+                    Ok(Some(IntervalSignal::Close(_))) => {
                         debug!("recv Close, worker exit");
                         break;
                     }
@@ -138,7 +108,7 @@ impl WorkerDispatcher {
                     .unwrap();
                 sleep(Duration::from_millis(700)).await;
             }
-            self.identity.dispatch_event(Close).await.unwrap();
+            self.identity.dispatch_with_key("Close", Close).await.unwrap();
         });
     }
 }

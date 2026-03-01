@@ -226,7 +226,7 @@ impl EntryOfBus {
         Ok(id.into_merge())
     }
 
-    pub async fn merge_tick_login<W: ToWorker, T: Event + Merge + FromTick>(
+    pub async fn merge_tick_login<W: ToWorker, T: Merge + FromTick>(
         &self,
         duration: Duration,
     ) -> Result<IdentityOfMergeTick<T>, BusError> {

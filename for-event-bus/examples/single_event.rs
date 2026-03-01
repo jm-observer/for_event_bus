@@ -65,7 +65,7 @@ impl Worker {
     }
     fn run(mut self) {
         spawn(async move {
-            while let Ok(event) = self.identity.recv::<OneEvent<AEvent, Close>>().await {
+            while let Ok(Some(event)) = self.identity.recv::<OneEvent<AEvent, Close>>().await {
                 match event.as_ref() {
                     OneEvent::Event(event) => {
                         debug!("WorkerA recv {:?}", event);

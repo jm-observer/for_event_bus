@@ -1,22 +1,26 @@
 use crate::bus::BusError;
-use crate::worker::identity::{FromTick, IdentityOfMerge, IdentityOfRx, IdentityOfTx, Merge};
+use crate::worker::identity::{
+    FromTick, IdentityOfRx, IdentityOfTx, Merge, MergeSkip,
+};
 use crate::Event;
 use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::time::{interval_at, Instant, Interval};
 
 /// Merge + Tick 语义身份：事件和定时 tick 统一投影为 T。
-pub struct IdentityOfMergeTick<T: Merge + Event + FromTick> {
+pub struct IdentityOfMergeTick<T: Merge + FromTick> {
     pub(crate) id: IdentityOfRx,
-    pub(crate) interval: Interval,
+    pub(crate) interval: Option<Interval>,
+    pub(crate) duration: Duration,
     pub(crate) phantom: PhantomData<T>,
 }
 
-impl<T: Merge + Event + FromTick> IdentityOfMergeTick<T> {
+impl<T: Merge + FromTick> IdentityOfMergeTick<T> {
     pub(crate) fn new(id: IdentityOfRx, duration: Duration) -> Self {
         Self {
             id,
-            interval: interval_at(Instant::now() + duration, duration),
+            interval: None,
+            duration,
             phantom: PhantomData,
         }
     }
@@ -25,28 +29,27 @@ impl<T: Merge + Event + FromTick> IdentityOfMergeTick<T> {
         self.id.tx()
     }
 
-    pub async fn recv_signal(&mut self) -> Result<Option<T>, BusError> {
+    pub async fn recv(&mut self) -> Result<Option<T>, BusError> {
+        let rx_event = &mut self.id.rx_event;
+        let interval = self
+            .interval
+            .get_or_insert_with(|| interval_at(Instant::now() + self.duration, self.duration));
         tokio::select! {
-            event = self.id.rx_event.recv() => match event {
+            event = rx_event.recv() => match event {
                 Some(event) => Ok(Some(T::merge(event)?)),
                 None => Ok(None),
             },
-            _ = self.interval.tick() => Ok(Some(T::from_tick())),
+            _ = interval.tick() => Ok(Some(T::from_tick())),
         }
-    }
-
-    pub async fn recv_merge(&mut self) -> Result<Option<T>, BusError> {
-        self.id.recv_merge::<T>().await
-    }
-
-    pub fn try_recv_merge(&mut self) -> Result<Option<T>, BusError> {
-        self.id.try_recv_merge::<T>()
     }
 
     pub async fn subscribe_with_key<E: Event + 'static>(
         &self,
         key: impl Into<String>,
-    ) -> Result<(), BusError> {
+    ) -> Result<(), BusError>
+    where
+        T: MergeSkip<E>,
+    {
         self.id.subscribe_with_key::<E>(key).await
     }
 
@@ -60,14 +63,6 @@ impl<T: Merge + Event + FromTick> IdentityOfMergeTick<T> {
         event: E,
     ) -> Result<(), BusError> {
         self.id.dispatch_with_key(key, event).await
-    }
-
-    pub fn into_merge(self) -> IdentityOfMerge<T> {
-        IdentityOfMerge::new(self.id)
-    }
-
-    pub fn into_inner(self) -> IdentityOfRx {
-        self.id
     }
 }
 
@@ -137,7 +132,7 @@ mod tests {
         );
 
         tx_event.send(BusEvent::new(Ping)).await.unwrap();
-        let signal = merge_tick.recv_signal().await.unwrap();
+        let signal = merge_tick.recv().await.unwrap();
         assert_eq!(signal, Some(IntervalTestSignal::Ping));
     }
 
@@ -156,7 +151,7 @@ mod tests {
             Duration::from_millis(10),
         );
 
-        let signal = merge_tick.recv_signal().await.unwrap();
+        let signal = merge_tick.recv().await.unwrap();
         assert_eq!(signal, Some(IntervalTestSignal::Tick));
     }
 }
