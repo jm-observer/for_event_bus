@@ -128,14 +128,14 @@ fn build_merge_tokens(item_enum: ItemEnum) -> Result<TokenStream2, syn::Error> {
 
     let end = quote!(
         impl for_event_bus::Merge for #ident {
-            fn merge(event: for_event_bus::BusEvent) -> Result<Self, BusError>
+            fn merge(event: for_event_bus::BusEvent) -> Result<Self, for_event_bus::BusError>
             where
                 Self: Sized,
             {
                 let actual = event.type_name();
                 let payload = event.as_any();
                 #(#tokens)else* else {
-                    Err(BusError::downcast_failed(stringify!(#ident), actual))
+                    Err(for_event_bus::BusError::downcast_failed(stringify!(#ident), actual))
                 }
             }
 

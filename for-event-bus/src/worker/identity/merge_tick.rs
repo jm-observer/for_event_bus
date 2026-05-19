@@ -30,12 +30,11 @@ impl<T: Merge + FromTick> IdentityOfMergeTick<T> {
     }
 
     pub async fn recv(&mut self) -> Result<Option<T>, BusError> {
-        let rx_event = &mut self.id.rx_event;
         let interval = self
             .interval
             .get_or_insert_with(|| interval_at(Instant::now() + self.duration, self.duration));
         tokio::select! {
-            event = rx_event.recv() => match event {
+            event = self.id.recv_event() => match event {
                 Some(event) => Ok(Some(T::merge(event)?)),
                 None => Ok(None),
             },
@@ -64,15 +63,19 @@ impl<T: Merge + FromTick> IdentityOfMergeTick<T> {
     ) -> Result<(), BusError> {
         self.id.dispatch_with_key(key, event).await
     }
+
+    /// 更新 tick 周期，下次 recv() 时生效
+    pub fn set_duration(&mut self, duration: Duration) {
+        self.duration = duration;
+        self.interval = None;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{BusData, BusEvent};
-    use crate::worker::WorkerId;
+    use crate::bus::{Bus, BusEvent};
     use std::any::TypeId;
-    use tokio::sync::mpsc;
 
     #[derive(Debug)]
     struct Ping;
@@ -118,38 +121,34 @@ mod tests {
 
     #[tokio::test]
     async fn recv_signal_can_receive_event() {
-        let (tx_data, _rx_data) = mpsc::unbounded_channel::<BusData>();
-        let (tx_event, rx_event) = mpsc::channel::<BusEvent>(1);
-        let id = WorkerId::init("interval-worker-event".to_string());
-        let identity = IdentityOfRx {
-            id,
-            rx_event,
-            tx_data,
-        };
-        let mut merge_tick = IdentityOfMergeTick::<IntervalTestSignal>::new(
-            identity,
-            Duration::from_secs(5),
-        );
+        let bus = Bus::<4>::init();
+        let id = bus
+            .login_with_name("interval-worker-event".to_string())
+            .await
+            .unwrap();
+        id.subscribe_merge::<IntervalTestSignal>().await.unwrap();
+        let mut merge_tick =
+            IdentityOfMergeTick::<IntervalTestSignal>::new(id, Duration::from_secs(5));
+        let tx = bus
+            .login_with_name("ping-dispatcher".to_string())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
-        tx_event.send(BusEvent::new(Ping)).await.unwrap();
+        tx.dispatch_event(Ping).await.unwrap();
         let signal = merge_tick.recv().await.unwrap();
         assert_eq!(signal, Some(IntervalTestSignal::Ping));
     }
 
     #[tokio::test]
     async fn recv_signal_can_receive_tick() {
-        let (tx_data, _rx_data) = mpsc::unbounded_channel::<BusData>();
-        let (_tx_event, rx_event) = mpsc::channel::<BusEvent>(1);
-        let id = WorkerId::init("interval-worker-tick".to_string());
-        let identity = IdentityOfRx {
-            id,
-            rx_event,
-            tx_data,
-        };
-        let mut merge_tick = IdentityOfMergeTick::<IntervalTestSignal>::new(
-            identity,
-            Duration::from_millis(10),
-        );
+        let bus = Bus::<4>::init();
+        let id = bus
+            .login_with_name("interval-worker-tick".to_string())
+            .await
+            .unwrap();
+        let mut merge_tick =
+            IdentityOfMergeTick::<IntervalTestSignal>::new(id, Duration::from_millis(10));
 
         let signal = merge_tick.recv().await.unwrap();
         assert_eq!(signal, Some(IntervalTestSignal::Tick));

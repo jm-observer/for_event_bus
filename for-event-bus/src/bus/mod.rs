@@ -1,23 +1,25 @@
-use crate::bus::sub_bus::{EntryOfSubBus, SubBus};
 use crate::worker::identity::{
     FromTick, IdentityCommon, IdentityOfMerge, IdentityOfMergeTick, IdentityOfRx, IdentityOfSimple,
     Merge,
 };
-use crate::worker::{CopyOfWorker, SubscribeKey, ToWorker, WorkerId};
+use crate::worker::{ToWorker, WorkerId};
 use crate::Event;
-use log::{debug, error, warn};
+use log::{debug, error};
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::spawn;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{channel, unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::time::sleep;
 
-mod sub_bus;
+/// 按路由键分发的 broadcast 注册表。数据面（publish/subscribe）直接读写它，
+/// 不经过控制 task，因此没有中心串行点。写锁只在首次订阅某路由键时取一次。
+pub(crate) type Registry = Arc<RwLock<HashMap<RouteKey, broadcast::Sender<BusEvent>>>>;
 
 #[derive(Clone)]
 pub struct BusEvent {
@@ -113,18 +115,15 @@ impl<T> From<SendError<T>> for BusError {
 pub(crate) enum BusData {
     /// Worker 登录，请求创建身份对象并返回给调用方。
     Login(oneshot::Sender<IdentityCommon>, String, bool),
-    // SimpleLogin(oneshot::Sender<IdentityCommon>, String),
-    /// Worker 订阅某个路由键（TypeId 或 key + TypeId）。
+    /// Worker 订阅某个路由键（仅控制面记账，供 trace/cleanup 使用）。
     Subscribe(WorkerId, RouteKey, &'static str),
-    /// Worker 发送事件，Bus 按路由键分发。
-    DispatchEvent(WorkerId, RouteKey, BusEvent),
-    /// Worker 下线，Bus 负责移除并清理订阅关系。
+    /// Worker 下线，移除记账。
     Drop(WorkerId),
     /// 定时输出订阅关系快照。
     Trace,
-    /// 清空关联关系（worker/subbus），但 bus 保持运行。
+    /// 清空瞬时 worker（kill），但 bus 保持运行。
     Cleanup(oneshot::Sender<()>),
-    /// 优雅关闭：清理 worker/subbus 后回执。
+    /// 优雅关闭：kill 所有 worker 后回执。
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -134,37 +133,56 @@ pub(crate) enum RouteKey {
     TypeWithKey(TypeId, String),
 }
 
+/// 把 RouteKey 对应的 broadcast Sender 取出（不存在则返回 None）。dispatch 走这条只读路径。
+pub(crate) fn lookup_sender(
+    registry: &Registry,
+    route_key: &RouteKey,
+) -> Option<broadcast::Sender<BusEvent>> {
+    registry.read().unwrap().get(route_key).cloned()
+}
+
+/// 取出或创建 RouteKey 对应的 broadcast Sender，并返回一个新的订阅 Receiver。subscribe 走这条路径。
+pub(crate) fn subscribe_sender(
+    registry: &Registry,
+    route_key: RouteKey,
+    cap: usize,
+) -> broadcast::Receiver<BusEvent> {
+    let mut map = registry.write().unwrap();
+    let sender = map
+        .entry(route_key)
+        .or_insert_with(|| broadcast::channel(cap.max(1)).0);
+    sender.subscribe()
+}
+
 #[derive(Clone)]
 pub struct EntryOfBus {
     tx: UnboundedSender<BusData>,
 }
 
 impl EntryOfBus {
-    pub async fn login_with_name(&self, name: impl Into<String>) -> Result<IdentityOfRx, BusError> {
+    async fn raw_login(&self, name: String, persistent: bool) -> Result<IdentityOfRx, BusError> {
         let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name.into(), false))?;
+        self.tx.send(BusData::Login(tx, name, persistent))?;
         Ok(rx.await?.into())
     }
 
+    pub async fn login_with_name(&self, name: impl Into<String>) -> Result<IdentityOfRx, BusError> {
+        self.raw_login(name.into(), false).await
+    }
+
     pub async fn login<W: ToWorker>(&self) -> Result<IdentityOfRx, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name(), false))?;
-        Ok(rx.await?.into())
+        self.raw_login(W::name(), false).await
     }
 
     pub async fn persistent_login_with_name(
         &self,
         name: impl Into<String>,
     ) -> Result<IdentityOfRx, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, name.into(), true))?;
-        Ok(rx.await?.into())
+        self.raw_login(name.into(), true).await
     }
 
     pub async fn persistent_login<W: ToWorker>(&self) -> Result<IdentityOfRx, BusError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(BusData::Login(tx, W::name(), true))?;
-        Ok(rx.await?.into())
+        self.raw_login(W::name(), true).await
     }
 
     pub async fn login_and_subscribe<W: ToWorker, T: Event + 'static>(
@@ -209,6 +227,16 @@ impl EntryOfBus {
         Ok(id.into_simple())
     }
 
+    pub async fn simple_login_with_name_and_key<T: Event + 'static>(
+        &self,
+        key: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<IdentityOfSimple<T>, BusError> {
+        let id = self.login_with_name(name).await?;
+        id.subscribe_with_key::<T>(key).await?;
+        Ok(id.into_simple())
+    }
+
     pub async fn merge_login<W: ToWorker, T: Event + Merge>(
         &self,
     ) -> Result<IdentityOfMerge<T>, BusError> {
@@ -235,7 +263,7 @@ impl EntryOfBus {
         Ok(id.into_merge_tick(duration))
     }
 
-    pub async fn merge_tick_login_with_name<T: Event + Merge + FromTick>(
+    pub async fn merge_tick_login_with_name<T: Merge + FromTick>(
         &self,
         name: impl Into<String>,
         duration: Duration,
@@ -245,7 +273,7 @@ impl EntryOfBus {
         Ok(id.into_merge_tick(duration))
     }
 
-    pub async fn login_and_subscribe_merge_with_name<T: Event + Merge>(
+    pub async fn login_and_subscribe_merge_with_name<T: Merge>(
         &self,
         name: impl Into<String>,
     ) -> Result<IdentityOfRx, BusError> {
@@ -254,10 +282,7 @@ impl EntryOfBus {
         Ok(id)
     }
 
-    /// 优雅关闭总线：
-    /// 1) 停止所有 subbus 循环
-    /// 2) 释放 worker 发送端，关闭 worker 事件通道
-    /// 3) 停止 bus 控制循环
+    /// 优雅关闭总线：kill 所有 worker，停止控制循环。
     pub async fn shutdown(&self) -> Result<(), BusError> {
         let (tx, rx) = oneshot::channel();
         self.tx.send(BusData::Shutdown(tx))?;
@@ -265,10 +290,7 @@ impl EntryOfBus {
         Ok(())
     }
 
-    /// 清空 bus 内部关联关系但不中断总线：
-    /// 1) 停止所有 subbus 循环
-    /// 2) 释放现存 worker 发送端（旧 worker 事件通道会关闭）
-    /// 3) bus 继续接受新登录/新订阅
+    /// 清空瞬时 worker（kill）但不中断总线；persistent worker 与已注册路由保留。
     pub async fn cleanup(&self) -> Result<(), BusError> {
         let (tx, rx) = oneshot::channel();
         self.tx.send(BusData::Cleanup(tx))?;
@@ -277,11 +299,18 @@ impl EntryOfBus {
     }
 }
 
+struct WorkerCtl {
+    name: Arc<String>,
+    persistent: bool,
+    kill: watch::Sender<bool>,
+    subs: HashSet<RouteKey>,
+}
+
 pub struct Bus<const CAP: usize> {
     rx: UnboundedReceiver<BusData>,
     tx: UnboundedSender<BusData>,
-    workers: HashMap<WorkerId, CopyOfWorker>,
-    sub_buses: HashMap<RouteKey, EntryOfSubBus>,
+    workers: HashMap<WorkerId, WorkerCtl>,
+    registry: Registry,
 }
 
 impl<const CAP: usize> Drop for Bus<CAP> {
@@ -293,24 +322,22 @@ impl<const CAP: usize> Drop for Bus<CAP> {
 impl<const CAP: usize> Bus<CAP> {
     pub fn init() -> EntryOfBus {
         let (tx, rx) = unbounded_channel();
+        let registry: Registry = Default::default();
+        let entry = EntryOfBus { tx: tx.clone() };
         Self {
             rx,
             tx: tx.clone(),
             workers: Default::default(),
-            sub_buses: Default::default(),
+            registry,
         }
-        .run();
-        EntryOfBus { tx }
+        .run(tx);
+        entry
     }
 
-    /// Bus 的控制循环：
-    /// 1) 处理登录和订阅关系维护
-    /// 2) 处理事件路由（按 TypeId -> SubBus）
-    /// 3) 处理 worker 下线后的清理
-    /// 4) 定时触发 trace 输出
-    fn run(mut self) {
+    /// 控制循环：只处理登录、订阅记账、下线、cleanup/shutdown、trace。
+    /// 事件分发（publish/recv）不经过这里。
+    fn run(mut self, tx: UnboundedSender<BusData>) {
         spawn(async move {
-            let tx = self.tx.clone();
             spawn(async move {
                 let time = Duration::from_secs(30);
                 loop {
@@ -322,64 +349,61 @@ impl<const CAP: usize> Bus<CAP> {
             });
             while let Some(event) = self.rx.recv().await {
                 match event {
-                    BusData::Login(tx, name, persistent) => {
-                        // 为每个 worker 创建一个独立接收通道（rx_event），
-                        // 并将身份对象回传给登录方。
-                        let (identity_rx, copy_of_worker) = self.init_worker(name, persistent);
-                        self.workers.insert(copy_of_worker.id(), copy_of_worker);
-                        if tx.send(identity_rx).is_err() {
-                            error!("login fail: tx ack fail");
-                        }
-                    }
-                    BusData::Drop(worker_id) => {
-                        self.remove_worker(&worker_id).await;
-                    }
-                    BusData::DispatchEvent(worker_id, route_key, event) => {
-                        if let Some(sub_buses) = self.sub_buses.get(&route_key) {
-                            debug!("{} dispatch {}", worker_id, sub_buses.name());
-                            sub_buses.send_event(event).await;
-                        } else {
-                            warn!(
-                                "{} dispatch route_key {:?} that no one subscribe",
-                                worker_id, route_key
-                            );
+                    BusData::Login(ack, name, persistent) => {
+                        let (kill_tx, kill_rx) = watch::channel(false);
+                        let (inbox_tx, rx_event) = channel(CAP);
+                        let id = WorkerId::init(name);
+                        let ctl = WorkerCtl {
+                            name: id.name_arc(),
+                            persistent,
+                            kill: kill_tx,
+                            subs: HashSet::new(),
+                        };
+                        self.workers.insert(id.clone(), ctl);
+                        let identity = IdentityCommon {
+                            id,
+                            rx_event,
+                            inbox_tx,
+                            tx_data: self.tx_for_identity(),
+                            registry: self.registry.clone(),
+                            kill_rx,
+                            cap: CAP,
+                        };
+                        if ack.send(identity).is_err() {
+                            error!("login fail: ack send fail");
                         }
                     }
                     BusData::Subscribe(worker_id, route_key, name) => {
                         debug!("{} subscribe {route_key:?} {}", worker_id, name);
                         if let Some(worker) = self.workers.get_mut(&worker_id) {
-                            match &route_key {
-                                RouteKey::Type(typeid) => worker.subscribe_event(*typeid),
-                                RouteKey::TypeWithKey(typeid, key) => {
-                                    worker.subscribe_event_with_key(*typeid, key.clone())
-                                }
-                            }
-                            if let Some(sub_buses) = self.sub_buses.get_mut(&route_key) {
-                                sub_buses.send_subscribe(worker.init_subscriber()).await;
-                            } else {
-                                let typeid = match route_key {
-                                    RouteKey::Type(typeid) | RouteKey::TypeWithKey(typeid, _) => {
-                                        typeid
-                                    }
-                                };
-                                let mut copy = SubBus::<CAP>::init(typeid, name);
-                                copy.send_subscribe(worker.init_subscriber()).await;
-                                self.sub_buses.insert(route_key, copy);
-                            }
+                            worker.subs.insert(route_key);
                         }
+                    }
+                    BusData::Drop(worker_id) => {
+                        debug!("{} Drop", worker_id);
+                        self.workers.remove(&worker_id);
                     }
                     BusData::Trace => {
-                        for (_, sub_bus) in self.sub_buses.iter() {
-                            sub_bus.send_trace().await;
+                        let mut by_route: HashMap<&RouteKey, Vec<&str>> = HashMap::new();
+                        for (_, ctl) in self.workers.iter() {
+                            for rk in ctl.subs.iter() {
+                                by_route.entry(rk).or_default().push(ctl.name.as_str());
+                            }
+                        }
+                        for (rk, names) in by_route {
+                            debug!("subscriber of {rk:?}: {}", names.join(","));
                         }
                     }
-                    BusData::Cleanup(tx) => {
-                        self.cleanup_associations().await;
-                        let _ = tx.send(());
+                    BusData::Cleanup(ack) => {
+                        self.kill_transient();
+                        let _ = ack.send(());
                     }
-                    BusData::Shutdown(tx) => {
-                        self.cleanup_associations().await;
-                        let _ = tx.send(());
+                    BusData::Shutdown(ack) => {
+                        for (_, ctl) in self.workers.drain() {
+                            let _ = ctl.kill.send(true);
+                        }
+                        self.registry.write().unwrap().clear();
+                        let _ = ack.send(());
                         break;
                     }
                 }
@@ -387,67 +411,26 @@ impl<const CAP: usize> Bus<CAP> {
         });
     }
 
-    async fn cleanup_associations(&mut self) {
-        let transient_workers: Vec<WorkerId> = self
+    fn tx_for_identity(&self) -> UnboundedSender<BusData> {
+        // IdentityOfRx 仅用它做下线记账与订阅记账。
+        self.tx.clone()
+    }
+
+    fn kill_transient(&mut self) {
+        let dead: Vec<WorkerId> = self
             .workers
             .iter()
-            .filter_map(|(id, worker)| {
-                if worker.persistent() {
+            .filter_map(|(id, ctl)| {
+                if ctl.persistent {
                     None
                 } else {
                     Some(id.clone())
                 }
             })
             .collect();
-
-        for worker_id in transient_workers {
-            self.remove_worker(&worker_id).await;
-        }
-    }
-
-    // fn init_worker(&self) -> (IdentityOfRx, CopyOfWorker) {
-    //     let (tx_event, rx_event) = unbounded_channel();
-    //     let id = WorkerId::default();
-    //     (
-    //         IdentityOfRx::init(id, rx_event, self.tx.clone()),
-    //         CopyOfWorker::init(id, tx_event),
-    //     )
-    // }
-    fn init_worker(&self, name: String, persistent: bool) -> (IdentityCommon, CopyOfWorker) {
-        // 每个 worker 拥有自己的事件队列，便于独立消费与背压控制。
-        let (tx_event, rx_event) = channel(CAP);
-        let id = WorkerId::init(name);
-        (
-            IdentityCommon {
-                id: id.clone(),
-                rx_event,
-                tx_data: self.tx.clone(),
-            },
-            CopyOfWorker::init(id, tx_event, persistent),
-        )
-    }
-
-    async fn remove_worker(&mut self, worker_id: &WorkerId) {
-        debug!("{} Drop", worker_id);
-        if let Some(worker) = self.workers.remove(worker_id) {
-            for subscribe_key in worker.subscribe_keys() {
-                let route_key = match subscribe_key {
-                    SubscribeKey::Type(ty_id) => RouteKey::Type(*ty_id),
-                    SubscribeKey::TypeWithKey(ty_id, key) => {
-                        RouteKey::TypeWithKey(*ty_id, key.clone())
-                    }
-                };
-                let should_remove = if let Some(sub_bus) = self.sub_buses.get_mut(&route_key) {
-                    sub_bus.send_unsubscribe(worker_id.clone()).await == 0
-                } else {
-                    false
-                };
-                if should_remove {
-                    if let Some(sub_bus) = self.sub_buses.remove(&route_key) {
-                        // 该路由键已无订阅者，释放对应 SubBus。
-                        sub_bus.send_drop().await;
-                    }
-                }
+        for id in dead {
+            if let Some(ctl) = self.workers.remove(&id) {
+                let _ = ctl.kill.send(true);
             }
         }
     }
